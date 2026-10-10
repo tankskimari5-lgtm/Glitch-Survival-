@@ -1,4 +1,4 @@
-/* GLITCH SURVIVAL — 2D REBOOT
+/* GLITCH SURVIVAL — 2D REBOOT V2.1 JOYSTICK FIX
    A self-contained top-down mobile survival game. No third-party JS or assets.
    All sprites are original procedural Canvas 2D artwork.
 */
@@ -51,7 +51,8 @@ let buildMode=null; // {id, x, y, rotation, mode}; all game state remains in the
 let lastBuildId='floor';let nextBuildingId=0;let activeChest=null;
 const effects=[];
 const keys=new Set();
-const joy={x:0,y:0,pointer:null};
+const joy={x:0,y:0,pointer:null,touch:null};
+let movementBlockedTime=0;
 let nodes=[],zombies=[],buildings=[];
 let nextZombieId=0;
 const state={player:{x:0,y:55,dir:0,aim:0,vx:0,vy:0,gait:0,anim:0,attacking:0,attackCooldown:0,hurt:0,footstep:0},hp:100,hunger:96,thirst:96,stamina:100,
@@ -132,6 +133,54 @@ function loadGame(){let raw;try{raw=localStorage.getItem(SAVE_KEY)}catch(e){retu
  return true;
  }catch(e){console.warn('Ignoring invalid save',e);return false}}
 function hurtPlayer(raw){if(state.player.hurt>.1)return;const protection=(state.equipment.chest==='hoodie'?.13:state.equipment.chest==='shirt'?.05:0)+(state.equipment.legs==='cargo'?.05:0)+(state.equipment.feet==='boots'?.05:0);const dmg=Math.max(1,raw*(1-protection));state.hp=Math.max(0,state.hp-dmg);state.player.hurt=.52;hitFlash=.48;screenShake=6;effects.push({kind:'text',x:state.player.x,y:state.player.y-27,text:'-'+Math.ceil(dmg),color:'#ff8880',t:0,life:1});if(state.hp<=0)die()}
+// Preserve old saves: if a newly added structure overlaps the last saved
+// coordinates, move the survivor onto the nearest unblocked ground.
+function findSafeSpot(cx,cy){
+ const centerX=clamp(Number.isFinite(cx)?cx:0,-WORLD_LIMIT+60,WORLD_LIMIT-60);
+ const centerY=clamp(Number.isFinite(cy)?cy:55,-WORLD_LIMIT+60,WORLD_LIMIT-60);
+ if(!collides(centerX,centerY))return {x:centerX,y:centerY};
+ for(let radius=24;radius<=250;radius+=24){
+  for(let step=0;step<24;step++){
+   const angle=step*TAU/24;
+   const x=clamp(centerX+Math.cos(angle)*radius,-WORLD_LIMIT+35,WORLD_LIMIT-35);
+   const y=clamp(centerY+Math.sin(angle)*radius,-WORLD_LIMIT+35,WORLD_LIMIT-35);
+   if(!collides(x,y))return {x,y};
+  }
+ }
+ // Last resort: use the starting clearing, then a nearby empty tile.
+ for(let radius=0;radius<=340;radius+=34){
+  for(let step=0;step<24;step++){
+   const a=step*TAU/24,x=Math.cos(a)*radius,y=55+Math.sin(a)*radius;
+   if(!collides(x,y))return {x,y};
+  }
+ }
+ return {x:0,y:55};
+}
+function moveToSafeGround(showMessage=true){
+ const p=state.player;
+ const spot=findSafeSpot(p.x,p.y);
+ if(!collides(p.x,p.y)&&showMessage){
+  // The player might be boxed in even if the precise center isn't colliding.
+  const nearby=[[-75,0],[75,0],[0,-75],[0,75]];
+  if(nearby.some(([dx,dy])=>!collides(p.x+dx,p.y+dy))){
+   showToast('Ground is clear here. Drag the MOVE stick in a direction.');
+   return false;
+  }
+ }
+ p.x=spot.x;p.y=spot.y;p.vx=0;p.vy=0;
+ camera.x=spot.x;camera.y=spot.y;
+ movementBlockedTime=0;saveGame();
+ if(showMessage)showToast('Survivor moved to safe ground. Your inventory and base are saved.');
+ return true;
+}
+function unstuckAtCamp(){
+ closeModal();
+ const p=state.player,spot=findSafeSpot(0,55);
+ p.x=spot.x;p.y=spot.y;p.vx=0;p.vy=0;
+ camera.x=p.x;camera.y=p.y;
+ resetJoy();saveGame();
+ showToast('Returned to camp safely. Buildings, gear and supplies preserved.',3400);
+}
 function die(){gameOver=true;joy.x=joy.y=0;keys.clear();$('death-screen').classList.remove('hidden');$('death-stats').textContent=`DAY ${Math.floor(state.elapsed/600)+1}  •  ${state.kills} KILLS  •  ${state.treesCut} TREES CUT`;saveGame();}
 function respawn(){state.hp=100;state.hunger=Math.max(state.hunger,56);state.thirst=Math.max(state.thirst,56);state.stamina=100;state.player.x=0;state.player.y=55;state.deathCount++;state.player.hurt=1.25;gameOver=false;$('death-screen').classList.add('hidden');for(const z of zombies)if(z.hp>0&&distance(0,0,z.x,z.y)<240){z.x=z.spawnX;z.y=z.spawnY}saveGame();showToast('Respawned at camp. Your base and gear are safe.');}
 function useSupply(id){if((state.inventory[id]||0)<1){showToast(`No ${TYPES[id]?.name||id} left`);return}if(id==='food'&&state.hunger>=99||id==='water'&&state.thirst>=99||id==='bandage'&&state.hp>=99){showToast('You do not need that yet');return}state.inventory[id]--;if(id==='food')state.hunger=clamp(state.hunger+38,0,100);if(id==='water')state.thirst=clamp(state.thirst+46,0,100);if(id==='bandage')state.hp=clamp(state.hp+38,0,100);showToast(`Used ${TYPES[id].name}`);status();saveGame()}
@@ -251,9 +300,9 @@ function renderModal(){if(!modal)return;$('modal-title').textContent={inventory:
  const gearItems=['axe','pickaxe','spear','torch','shirt','hoodie','cargo','boots','backpack'].filter(id=>state.inventory[id]>0);
  body.innerHTML=`<p class="panel-note">Starter survivor: rugged hair, bare chest, ragged shorts and sandals. Equipping clothes or weapons changes your character in the game.</p><div class="equipment-grid">${Object.entries(display).map(([slot,value])=>`<div class="gear-slot"><strong>${slot.toUpperCase()}</strong><span>${value}</span></div>`).join('')}</div><div class="section-title">AVAILABLE GEAR</div><div class="items-grid">${gearItems.length?gearItems.map(id=>`<div class="item-card"><div class="item-top"><div class="item-emoji">${TYPES[id].emoji}</div><div class="item-title">${TYPES[id].name}</div></div><div class="item-desc">${itemDetails(id)}</div><button class="small-btn" data-equip="${id}">${Object.values(state.equipment).includes(id)?'UNEQUIP':'EQUIP'}</button></div>`).join(''):'<p class="panel-note">No crafted clothes yet. Gather supplies and open CRAFTING to make some.</p>'}</div>`;
  }
- if(modal==='settings')body.innerHTML=`<p class="panel-note">Your game saves automatically to this browser. This is a fresh 2D game, separate from the previous 3D version.</p><div class="items-grid"><div class="item-card"><div class="item-title">SAVE GAME</div><div class="item-desc">Store character, inventory, health, buildings and world progress.</div><button class="small-btn" data-save="true">SAVE NOW</button></div><div class="item-card"><div class="item-title">CONTROLS</div><div class="item-desc">Phone: move joystick, GATHER, ATTACK, menus. Computer: WASD/arrows, E, Space, I, C, B, G.</div></div><div class="item-card"><div class="item-title">FRESH START</div><div class="item-desc">Erase this 2D world's progress on this device. Does not touch archived 3D backups.</div><button class="small-btn secondary" data-reset="true">RESET 2D SAVE</button></div></div>`;
+ if(modal==='settings')body.innerHTML=`<p class="panel-note">Your game saves automatically to this browser. The MOVE joystick supports drag controls on iPhone, Android and desktop.</p><div class="items-grid"><div class="item-card"><div class="item-title">SAVE GAME</div><div class="item-desc">Keep your gear, supplies, bases and player position.</div><button class="small-btn" data-save="true">SAVE NOW</button></div><div class="item-card"><div class="item-title">MOVEMENT / UNSTUCK</div><div class="item-desc">If your survivor is stuck after a building update, return to safe ground at camp without losing items or buildings.</div><button class="small-btn" data-unstuck="true">↖ RETURN TO CAMP</button></div><div class="item-card"><div class="item-title">CONTROLS</div><div class="item-desc">DRAG the circular MOVE stick to walk. Keyboard: WASD or arrows. Touch and hold outside the center to move instantly.</div></div><div class="item-card"><div class="item-title">FRESH START</div><div class="item-desc">Erase ONLY your 2D progress on this device.</div><button class="small-btn secondary" data-reset="true">RESET 2D SAVE</button></div></div>`;
 }
-function openModal(name){modal=name;paused=true;$('modal-shell').classList.remove('hidden');renderModal();joy.x=0;joy.y=0;}
+function openModal(name){modal=name;paused=true;$('modal-shell').classList.remove('hidden');renderModal();resetJoy();}
 function closeModal(){modal=null;paused=false;$('modal-shell').classList.add('hidden');status()}
 function handleModalAction(e){const btn=e.target.closest('button');if(!btn)return;
  if(btn.dataset.craft)craft(btn.dataset.craft);
@@ -264,6 +313,7 @@ function handleModalAction(e){const btn=e.target.closest('button');if(!btn)retur
  else if(btn.dataset.equip)equip(btn.dataset.equip);
  else if(btn.dataset.use){useSupply(btn.dataset.use);renderModal()}
  else if(btn.dataset.save){saveGame(false);renderModal()}
+ else if(btn.dataset.unstuck){unstuckAtCamp()}
  else if(btn.dataset.reset){if(confirm('Erase ONLY this 2D save and start again?')){try{localStorage.removeItem(SAVE_KEY)}catch(e){}location.reload()}}
 }
 
@@ -470,8 +520,20 @@ function update(dt){if(paused||gameOver)return;const p=state.player;state.elapse
  const moving=Math.hypot(p.vx,p.vy)>6;
  if(moving){
   const vx=p.vx*dt,vy=p.vy*dt;
+  const beforeX=p.x,beforeY=p.y;
   if(!collides(p.x+vx,p.y))p.x+=vx;else p.vx*=.1;
   if(!collides(p.x,p.y+vy))p.y+=vy;else p.vy*=.1;
+  if(len>.2&&Math.hypot(p.x-beforeX,p.y-beforeY)<.02){
+    movementBlockedTime+=dt;
+    if(movementBlockedTime>.75){
+      movementBlockedTime=0;
+      if(collides(p.x,p.y)){
+        moveToSafeGround(true);
+      }else{
+        showToast('Movement blocked by an obstacle. Try another direction or Settings → RETURN TO CAMP.',2700);
+      }
+    }
+  }else movementBlockedTime=0;
   const desired=Math.atan2(p.vx,-p.vy);
   const turn=Math.atan2(Math.sin(desired-p.dir),Math.cos(desired-p.dir));
   p.dir+=turn*Math.min(1,dt*12);
@@ -532,13 +594,79 @@ for(const [id,cb] of Object.entries({
  'build-select':()=>openModal('build')
 }))$(id).addEventListener('click',cb);
 
-// Touch and keyboard controls.
+// Touch and keyboard controls. A resilient joystick implementation:
+// iOS Safari and in-app webviews can occasionally cancel Pointer Events or
+// reject setPointerCapture. Touch Events provide a second path to the same
+// movement state; both paths are tested on mobile-sized layouts.
 const stick=$('joystick'),knob=$('joystick-inner');
-function pointerJoy(e){const b=stick.getBoundingClientRect(),centerX=b.left+b.width/2,centerY=b.top+b.height/2,radius=b.width*.31;let x=e.clientX-centerX,y=e.clientY-centerY;const len=Math.hypot(x,y);if(len>radius){x*=radius/len;y*=radius/len}joy.x=clamp(x/radius,-1,1);joy.y=clamp(y/radius,-1,1);knob.style.transform=`translate(${x}px,${y}px)`}
-function resetJoy(){joy.pointer=null;joy.x=0;joy.y=0;knob.style.transform='translate(0px,0px)'}
-stick.addEventListener('pointerdown',e=>{e.preventDefault();joy.pointer=e.pointerId;stick.setPointerCapture(e.pointerId);pointerJoy(e)});
-stick.addEventListener('pointermove',e=>{if(e.pointerId===joy.pointer){e.preventDefault();pointerJoy(e)}});
-for(const name of ['pointerup','pointercancel','lostpointercapture'])stick.addEventListener(name,e=>{if(e.pointerId===joy.pointer)resetJoy()});
+const joyStatus=$('joystick-status');
+function setJoyPosition(clientX,clientY){
+ const b=stick.getBoundingClientRect();
+ const radius=Math.max(25,b.width*.32);
+ let x=clientX-b.left-b.width/2,y=clientY-b.top-b.height/2;
+ if(!Number.isFinite(x)||!Number.isFinite(y))return;
+ const len=Math.hypot(x,y);
+ if(len>radius){x*=radius/len;y*=radius/len}
+ joy.x=clamp(x/radius,-1,1);
+ joy.y=clamp(y/radius,-1,1);
+ knob.style.transform=`translate3d(${x}px,${y}px,0)`;
+ stick.classList.toggle('is-moving',Math.hypot(joy.x,joy.y)>.08);
+ if(joyStatus)joyStatus.textContent=Math.hypot(joy.x,joy.y)>.08?'MOVING':'DRAG TO MOVE';
+}
+function resetJoy(){
+ joy.pointer=null;joy.touch=null;joy.x=0;joy.y=0;
+ knob.style.transform='translate3d(0,0,0)';
+ stick.classList.remove('is-moving');
+ if(joyStatus)joyStatus.textContent='DRAG TO MOVE';
+}
+stick.addEventListener('pointerdown',e=>{
+ if(paused||gameOver)return;
+ e.preventDefault();
+ if(joy.pointer!==null)return;
+ joy.pointer=e.pointerId;
+ // Apply joystick movement FIRST. Some mobile browsers throw on capture.
+ setJoyPosition(e.clientX,e.clientY);
+ try{if(stick.setPointerCapture)stick.setPointerCapture(e.pointerId)}catch(err){/* touch/window handlers keep working */}
+});
+window.addEventListener('pointermove',e=>{
+ if(e.pointerId!==joy.pointer||paused||gameOver)return;
+ if(e.cancelable)e.preventDefault();
+ setJoyPosition(e.clientX,e.clientY);
+},{passive:false});
+window.addEventListener('pointerup',e=>{
+ if(e.pointerId===joy.pointer){joy.pointer=null;if(joy.touch===null)resetJoy()}
+});
+for(const name of ['pointercancel','lostpointercapture']){
+ window.addEventListener(name,e=>{
+   if(e.pointerId===joy.pointer){joy.pointer=null;if(joy.touch===null)resetJoy()}
+ });
+}
+// Compatibility fallback for iOS versions where pointercapture stops tracking
+// a dragged thumb. Track the same physical touch using its identifier.
+stick.addEventListener('touchstart',e=>{
+ if(paused||gameOver||joy.touch!==null)return;
+ const t=e.changedTouches[0];if(!t)return;
+ joy.touch=t.identifier;
+ if(e.cancelable)e.preventDefault();
+ setJoyPosition(t.clientX,t.clientY);
+},{passive:false});
+window.addEventListener('touchmove',e=>{
+ if(joy.touch===null||paused||gameOver)return;
+ for(const t of e.changedTouches){
+  if(t.identifier!==joy.touch)continue;
+  if(e.cancelable)e.preventDefault();
+  setJoyPosition(t.clientX,t.clientY);
+  break;
+ }
+},{passive:false});
+for(const name of ['touchend','touchcancel']){
+ window.addEventListener(name,e=>{
+  if(joy.touch===null)return;
+  for(const t of e.changedTouches){
+   if(t.identifier===joy.touch){resetJoy();break}
+  }
+ },{passive:false});
+}
 $('interact-btn').addEventListener('pointerdown',e=>{e.preventDefault();gather()});$('attack-btn').addEventListener('pointerdown',e=>{e.preventDefault();attack()});
 for(const el of document.querySelectorAll('[data-open]'))el.addEventListener('click',()=>openModal(el.dataset.open));
 for(const el of document.querySelectorAll('[data-quick]'))el.addEventListener('click',()=>useQuick(Number(el.dataset.quick)));
@@ -560,10 +688,12 @@ if(window.visualViewport)window.visualViewport.addEventListener('resize',resize)
 // Start the new 2D world. Old 3D save keys are intentionally untouched.
 createWorld();
 const resumed=loadGame();if(!resumed){camera.x=state.player.x;camera.y=state.player.y}
+const loadedInsideObstacle=collides(state.player.x,state.player.y);
+if(loadedInsideObstacle)moveToSafeGround(false);
 resize();status();updatePrompt();
 if(resumed||(()=>{try{return localStorage.getItem('glitch-survival-2d-tip')==='1'}catch(e){return false}})())$('onboarding').classList.add('hidden');
-if(resumed)showToast('Welcome back to your 2D survivor camp!');else showToast('NEW WORLD · Day 1 begins. Gather resources and survive!',3700);
+if(loadedInsideObstacle)showToast('Saved position was blocked. Your survivor is now on safe ground.',3800);else if(resumed)showToast('Welcome back! Drag the MOVE circle to walk.');else showToast('NEW WORLD · Drag MOVE to walk, gather resources and survive!',3900);
 requestAnimationFrame(tick);
 // Small read-only diagnostics for automated browser tests.
-window.__GLITCH_DIAGNOSTICS__={getSnapshot:()=>({player:{x:state.player.x,y:state.player.y},stats:{hp:state.hp,hunger:state.hunger,thirst:state.thirst},inventory:{...state.inventory},equipment:{...state.equipment},nodes:nodes.length,zombies:zombies.length,buildings:buildings.length,buildMode:buildMode?{...buildMode}:null,paused,modal,elapsed:state.elapsed}),getMove:movementVector};
+window.__GLITCH_DIAGNOSTICS__={getSnapshot:()=>({player:{x:state.player.x,y:state.player.y},stats:{hp:state.hp,hunger:state.hunger,thirst:state.thirst},inventory:{...state.inventory},equipment:{...state.equipment},nodes:nodes.length,zombies:zombies.length,buildings:buildings.length,buildMode:buildMode?{...buildMode}:null,paused,modal,elapsed:state.elapsed}),getMove:movementVector,getJoystick:()=>({x:joy.x,y:joy.y,pointer:joy.pointer,touch:joy.touch,paused,blocked:collides(state.player.x,state.player.y)})};
 })();
