@@ -312,15 +312,22 @@ function updateBuildHUD(){
  const root=$('construction-hud');if(!root)return;
  if(!buildMode){root.classList.add('hidden');document.body.classList.remove('build-active');return}
  root.classList.remove('hidden');document.body.classList.add('build-active');const r=BUILD_RECIPES.find(x=>x.id===buildMode.id);
- $('build-piece-title').textContent=(r?.emoji||'⌂')+' '+(r?.name||'BUILD');
+ const selected=buildMode.mode==='edit'?buildMode.target:null;
+ const editRecipe=selected?BUILD_RECIPES.find(def=>def.id===selected.kind):null;
+ $('build-piece-title').textContent=buildMode.mode==='edit'?(selected?`${editRecipe?.emoji||'⚒'} ${editRecipe?.name||selected.kind}`:'⚒ EDIT / REMOVE'):(r?.emoji||'⌂')+' '+(r?.name||'BUILD');
  const result=buildMode.mode==='place'?checkBuildingSpot(buildMode.id,buildMode.x,buildMode.y,buildMode.rotation):null;
- $('build-feedback').textContent=buildMode.mode==='place'?(result?.ok&&isBarrier(buildMode.id)?'✓ Snapped to a foundation edge · ready to place':(result?.reason||'')):'Tap an existing structure to select it';
+ $('build-feedback').textContent=buildMode.mode==='place'?(result?.ok&&isBarrier(buildMode.id)?'✓ Snapped to a foundation edge · ready to place':(result?.reason||'')):
+  (selected?`${isLegacyBarrier(selected)?'OLD CENTER WALL · ':''}Selected ${editRecipe?.name||selected.kind}. REMOVE deletes this piece only.`:'Tap a structure to select it, or press WALLS to cycle through nearby walls.');
  $('build-feedback').classList.toggle('bad',!!result&&!result.ok);
  $('build-action').textContent=buildMode.mode==='place'?'✓ PLACE':'⚒ REPAIR';
- $('build-action').disabled=buildMode.mode==='place'?!result?.ok:!buildMode.target;
+ $('build-action').disabled=buildMode.mode==='place'?!result?.ok:!selected;
  $('build-remove').classList.toggle('hidden',buildMode.mode==='place');
- $('build-rotate').classList.toggle('hidden',buildMode.mode!=='place');
- $('build-material').textContent=buildMode.mode==='place'?Object.entries(r.cost).map(([id,qty])=>`${TYPES[id]?.emoji||'▪'} ${state.inventory[id]||0}/${qty}`).join('  '):`Edit existing structure`;
+ $('build-remove').disabled=buildMode.mode==='edit'&&!selected;
+ $('build-remove').textContent=selected?'⌫ REMOVE '+(isBarrier(selected.kind)?'WALL':selected.kind.toUpperCase()):'⌫ REMOVE';
+ $('build-rotate').classList.remove('hidden');
+ $('build-rotate').textContent=buildMode.mode==='edit'?'▥ WALLS':'↻ ROTATE';
+ $('build-material').textContent=buildMode.mode==='place'?Object.entries(r.cost).map(([id,qty])=>`${TYPES[id]?.emoji||'▪'} ${state.inventory[id]||0}/${qty}`).join('  '):
+  (selected?`${Math.ceil(selected.hp||0)}/${selected.maxhp||buildingHP(selected.kind)} HP · Foundation stays when a wall is removed`:'EDIT MODE · Tap a wall or press WALLS');
 }
 function beginBuilding(id){
  if(!BUILD_RECIPES.some(x=>x.id===id))return;
@@ -331,7 +338,47 @@ function beginBuilding(id){
  showToast(isBarrier(id)?'Tap any foundation EDGE to place a wall, door or window':
    'BUILD MODE · Tap an open patch of ground or press PLACE',2600);
 }
-function selectBuildingAt(x,y){let b=null,best=42;for(const xB of buildings){if(xB.starter)continue;let d=distance(x,y,xB.x,xB.y);if(d<best){best=d;b=xB}}return b}
+// V2.4 EDIT MODE: hit-test actual structure footprints, not just tile centers.
+// Old (pre-edge-snap) walls share a center with the foundation. The wall must
+// win when tapping it, otherwise the floor is selected and cannot be removed.
+function isLegacyBarrier(b){return isBarrier(b.kind)&&Math.abs(b.x-snap(b.x))<1&&Math.abs(b.y-snap(b.y))<1}
+function selectBuildingAt(x,y){
+ let selected=null,best=Infinity;
+ for(const b of buildings){
+  if(b.starter)continue;
+  const dx=Math.abs(x-b.x),dy=Math.abs(y-b.y);
+  const rot=(b.rotation||0)%2;
+  let score=Infinity;
+  if(isBarrier(b.kind)){
+   // Horizontal / vertical wall footprints get a generous finger-sized hit area.
+   const inside=rot ? dx<=22&&dy<=38 : dx<=38&&dy<=22;
+   if(inside)score=Math.hypot(dx,dy);
+  }else if(b.kind==='floor'||b.kind==='roof'){
+   if(dx<=GRID/2+3&&dy<=GRID/2+3)score=Math.hypot(dx,dy)+(b.kind==='floor'?48:30);
+  }else if(Math.hypot(dx,dy)<=34)score=Math.hypot(dx,dy)+15;
+  if(score<best){best=score;selected=b}
+ }
+ return selected;
+}
+function selectEditTarget(b,announce=true){
+ if(!buildMode||buildMode.mode!=='edit')return false;
+ buildMode.target=b||null;
+ if(b){buildMode.x=b.x;buildMode.y=b.y;buildMode.rotation=b.rotation||0;
+  if(announce)showToast(`Selected ${BUILD_RECIPES.find(r=>r.id===b.kind)?.name||b.kind}${isLegacyBarrier(b)?' (old center wall)':''} · tap REMOVE`,1800);
+ }else if(announce)showToast('Tap a wall or press WALLS to select a nearby wall',1900);
+ updateBuildHUD();return !!b;
+}
+// A dedicated WALLS button lets phone players pick walls when the floor, roof,
+// or build toolbar obscures the wall. Repeated presses cycle through walls.
+function selectNextWall(){
+ if(!buildMode||buildMode.mode!=='edit'){enterEditMode();return}
+ const options=buildings.filter(b=>isBarrier(b.kind)&&distance(b.x,b.y,state.player.x,state.player.y)<=205)
+   .sort((a,b)=>Number(isLegacyBarrier(b))-Number(isLegacyBarrier(a))||
+     distance(a.x,a.y,state.player.x,state.player.y)-distance(b.x,b.y,state.player.x,state.player.y));
+ if(!options.length){showToast('No walls close enough. Walk near your old walls.',2000);return}
+ const i=options.indexOf(buildMode.target);
+ selectEditTarget(options[(i+1)%options.length]);
+}
 function placeBuilding(id){if(!buildMode||buildMode.id!==id){beginBuilding(id);return false}return confirmBuild()}
 function confirmBuild(){if(!buildMode)return false;
  if(buildMode.mode==='edit')return repairStructure(buildMode.target);
@@ -359,10 +406,22 @@ function demolishStructure(b){if(!b||b.starter)return false;const layer=building
  })){showToast('Remove supported walls, roof and furniture before this foundation');return false}
  if(distance(state.player.x,state.player.y,b.x,b.y)>205){showToast('Move closer to dismantle');return false}
  const recipe=BUILD_RECIPES.find(x=>x.id===b.kind);if(recipe){for(const [item,qty] of Object.entries(recipe.cost))addItem(item,Math.max(1,Math.floor(qty*.5)))}
- buildings.splice(buildings.indexOf(b),1);if(b.kind==='wall')state.wallsBuilt=Math.max(0,state.wallsBuilt-1);if(buildMode)buildMode.target=null;showToast('Structure dismantled · some materials recovered');saveGame();updateBuildHUD();return true;
+ buildings.splice(buildings.indexOf(b),1);if(b.kind==='wall')state.wallsBuilt=Math.max(0,state.wallsBuilt-1);
+ if(buildMode&&buildMode.target===b)buildMode.target=null;
+ showToast(`${BUILD_RECIPES.find(x=>x.id===b.kind)?.name||'Structure'} removed · foundation preserved · materials recovered`,2300);
+ saveGame();updateBuildHUD();return true;
 }
 function upgradeStructure(b){if(!b||b.starter)return false;if(!['wall','door','window'].includes(b.kind)){showToast('Only barriers can be reinforced');return false}if(b.level>=3){showToast('Already fully reinforced');return false}const price=b.level===1?{wood:3,stone:2}:{stone:5,scrap:2};if(!consumeCost(price)){showToast('Need '+resourceText(price));return false}b.level++;b.maxhp+=b.level===2?120:180;b.hp=b.maxhp;showToast('Barrier reinforced to tier '+b.level);saveGame();return true}
-function enterEditMode(){if(!buildMode){const c=defaultBuildCell();buildMode={mode:'edit',id:lastBuildId,x:c.x,y:c.y,rotation:0,target:null}}else{buildMode.mode='edit';buildMode.target=null}updateBuildHUD();showToast('Tap a built piece to edit or dismantle');}
+function enterEditMode(){
+ if(!buildMode){const c=defaultBuildCell();buildMode={mode:'edit',id:lastBuildId,x:c.x,y:c.y,rotation:0,target:null}}
+ else{buildMode.mode='edit';buildMode.target=null}
+ // Older center-mounted walls were obscured by the foundations underneath.
+ // Select the nearest old wall automatically to help repair saved bases.
+ const nearestOld=buildings.filter(b=>isLegacyBarrier(b)&&distance(b.x,b.y,state.player.x,state.player.y)<=170)
+  .sort((a,b)=>distance(a.x,a.y,state.player.x,state.player.y)-distance(b.x,b.y,state.player.x,state.player.y))[0];
+ if(nearestOld)selectEditTarget(nearestOld,false);
+ updateBuildHUD();showToast(nearestOld?'Old wall selected · tap REMOVE to clear it':'Tap a structure or press WALLS to select nearby walls',2400);
+}
 function stopBuilding(){buildMode=null;updateBuildHUD();showToast('Build mode closed',1000);saveGame()}
 function toggleDoor(b){if(!b||b.kind!=='door')return false;if(distance(b.x,b.y,state.player.x,state.player.y)>97)return false;b.open=!b.open;showToast(b.open?'Door opened':'Door closed',1000);saveGame();return true}
 function interactStructure(){const b=nearbyStructure(83,z=>z.kind==='door'||z.kind==='storage');if(!b)return false;if(b.kind==='door')return toggleDoor(b);if(b.kind==='storage'){activeChest=b;activeChest.contents||={};openModal('storage');return true}return false}
@@ -530,7 +589,8 @@ function drawConstructionGhost(){if(!buildMode)return;
  const bw=(isEdge&&rot%2?16:54)*s,bh=(isEdge&&rot%2?54:isEdge?16:54)*s;
  const xx=px(x)-bw/2,yy=py(y)-bh/2;
  ctx.fillRect(xx,yy,bw,bh);ctx.strokeRect(xx,yy,bw,bh);ctx.setLineDash([]);
- ctx.globalAlpha=.75;drawBuilding({kind:buildMode.mode==='place'?buildMode.id:candidate.kind,x,y,hp:100,maxhp:100,level:1,rotation:buildMode.rotation,open:false});ctx.globalAlpha=1;
+ ctx.globalAlpha=buildMode.mode==='edit'?.34:.75;
+ drawBuilding({kind:buildMode.mode==='place'?buildMode.id:candidate.kind,x,y,hp:100,maxhp:100,level:1,rotation:rot,open:false});ctx.globalAlpha=1;
  ctx.font=`800 ${12*s}px system-ui`;ctx.textAlign='center';ctx.lineWidth=3*s;ctx.strokeStyle='#12231c';ctx.strokeText(valid?'✓':'×',px(x),py(y)-33*s);ctx.fillStyle=valid?'#dcffbd':'#ffc3bd';ctx.fillText(valid?'✓':'×',px(x),py(y)-33*s);ctx.restore();}
 // Layered procedural character sprites with independent step cycles, arm swing,
 // directional head, breathing and a timed weapon strike. No external sprite sheets.
@@ -709,8 +769,7 @@ canvas.addEventListener('pointerdown',e=>{
  const x=camera.x+(e.clientX-rect.left-rect.width/2)/viewport.scale;
  const y=camera.y+(e.clientY-rect.top-rect.height/2)/viewport.scale;
  if(buildMode.mode==='edit'){
-  buildMode.target=selectBuildingAt(x,y);
-  if(buildMode.target){buildMode.x=buildMode.target.x;buildMode.y=buildMode.target.y;showToast('Selected '+buildMode.target.kind+' · '+Math.round(100*buildMode.target.hp/buildMode.target.maxhp)+'% integrity',1000)}
+  selectEditTarget(selectBuildingAt(x,y));
  }else if(isBarrier(buildMode.id)){
    // A tap inside a foundation tile finds its closest edge. No need to
    // perfectly touch the 1-pixel grid line on a small phone screen.
@@ -723,6 +782,7 @@ canvas.addEventListener('pointerdown',e=>{
 for(const [id,cb] of Object.entries({
  'build-action':()=>confirmBuild(),
  'build-rotate':()=>{
+   if(buildMode?.mode==='edit'){selectNextWall();return;}
    if(!buildMode||buildMode.mode!=='place')return;
    const nextRotation=(buildMode.rotation+1)%2;
    if(isBarrier(buildMode.id)){
