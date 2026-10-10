@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>AFTERFALL — Survival Prototype</title>
+<style>
+:root{--panel:rgba(12,20,19,.88);--line:#45605a;--green:#b9e7a5;--gold:#f0ca78}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111916;color:#eef4e8;font-family:system-ui,-apple-system,Segoe UI,sans-serif;touch-action:none}
+#game{position:fixed;inset:0}canvas{display:block}
+#hud{position:fixed;inset:0;pointer-events:none}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:0 8px 24px #0005;backdrop-filter:blur(7px)}
+#brand{position:absolute;top:12px;left:12px;padding:10px 13px;max-width:calc(100vw - 24px)}
+#brand b{letter-spacing:2px;color:var(--green);font-size:14px}#brand small{display:block;color:#b4c4b7;font-size:10px;letter-spacing:1px}
+#stats{position:absolute;top:12px;right:12px;width:190px;padding:10px}
+.stat{display:grid;grid-template-columns:56px 1fr;align-items:center;gap:7px;font-size:11px;margin:5px 0}.bar{height:7px;background:#273530;border-radius:9px;overflow:hidden}.fill{height:100%;width:100%;background:#b8e29b;transition:width .2s}.fill.hunger{background:#e9bd69}.fill.thirst{background:#7cc9e6}.fill.health{background:#e87c72}
+#inventory{position:absolute;left:12px;bottom:12px;padding:10px 12px;min-width:230px;font-size:12px}
+#inventory b{color:var(--green);font-size:11px;letter-spacing:1px}#items{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}.item{background:#25342e;border:1px solid #40594d;border-radius:6px;padding:5px 7px;font-size:11px}
+#help{position:absolute;right:12px;bottom:12px;padding:10px 12px;font-size:11px;color:#c7d5c9;max-width:230px;line-height:1.5}
+#toast{position:absolute;top:100px;left:50%;transform:translateX(-50%);background:#101b17eF;border:1px solid #617f6c;border-radius:10px;padding:9px 14px;font-size:13px;opacity:0;transition:opacity .2s;max-width:85vw;text-align:center}
+#actions{position:absolute;top:105px;left:12px;display:flex;flex-direction:column;gap:7px;pointer-events:auto}
+button{font:600 12px system-ui;color:#edf7e9;background:#1b2a24eF;border:1px solid #567063;border-radius:9px;padding:9px 11px;cursor:pointer;box-shadow:0 3px 10px #0004}
+button:active{transform:scale(.97)}button.primary{background:#b8e29b;color:#152019;border-color:#d8f4c5}
+#modal{display:none;position:fixed;inset:0;background:#06100dcc;z-index:5;align-items:center;justify-content:center;padding:14px;overflow:auto}
+#modal .box{width:min(620px,100%);max-height:90vh;overflow:auto;padding:18px;background:#14221d;border:1px solid #567063;border-radius:16px}
+h2{margin:0 0 5px;font-size:20px;color:var(--green)}.muted{color:#aabdb0;font-size:12px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.recipe{padding:11px;border:1px solid #40594d;border-radius:10px;background:#1c2d25}.recipe b{display:block;font-size:13px;margin-bottom:4px}.recipe p{font-size:11px;color:#b5c7b8;margin:0 0 9px}
+#mobile{display:none;position:fixed;inset:0;pointer-events:none;z-index:3}
+#stick{position:absolute;bottom:25px;left:22px;width:120px;height:120px;border-radius:50%;background:#c4f3d01c;border:1px solid #d2f7db66;pointer-events:auto;touch-action:none}
+#nub{position:absolute;width:48px;height:48px;border-radius:50%;left:35px;top:35px;background:#c4f3d066;border:1px solid #e0ffdfaa}
+#mobileBtns{position:absolute;right:15px;bottom:22px;display:flex;flex-direction:column;gap:8px;pointer-events:auto}
+#mobileBtns button{width:90px;height:46px;background:#14221de8}
+#mobileBtns .hit{background:#b8e29b;color:#152019}
+#crosshair{position:absolute;left:50%;top:50%;width:7px;height:7px;border:1px solid #eaf4d9;border-radius:50%;transform:translate(-50%,-50%);opacity:.6}
+#footer{position:absolute;bottom:120px;left:50%;transform:translateX(-50%);font-size:10px;color:#d1e0d0;text-shadow:0 1px 5px #000;white-space:nowrap}
+@media(max-width:700px){#stats{width:155px;top:10px;right:10px;padding:7px}.stat{grid-template-columns:48px 1fr;font-size:10px;margin:4px 0}#brand{top:10px;left:10px;padding:8px 10px}#brand b{font-size:12px}#help{display:none}#inventory{left:10px;bottom:10px;min-width:0;max-width:calc(100vw - 20px);padding:8px}#items{max-width:220px}#actions{top:96px;left:10px}#actions button{padding:8px;font-size:11px}#mobile{display:block}#footer{bottom:155px}}
+</style>
+</head>
+<body>
+<div id="game"></div>
+<div id="hud">
+ <div id="brand" class="panel"><b>AFTERFALL</b><small>WILDERNESS SURVIVAL // DAY 01</small></div>
+ <div id="stats" class="panel">
+  <div class="stat"><span>HEALTH</span><div class="bar"><div id="healthBar" class="fill health"></div></div></div>
+  <div class="stat"><span>HUNGER</span><div class="bar"><div id="hungerBar" class="fill hunger"></div></div></div>
+  <div class="stat"><span>THIRST</span><div class="bar"><div id="thirstBar" class="fill thirst"></div></div></div>
+  <div class="stat"><span>STAMINA</span><div class="bar"><div id="staminaBar" class="fill"></div></div></div>
+ </div>
+ <div id="actions">
+  <button id="buildBtn">＋ Build base</button>
+  <button id="craftBtn">⚒ Crafting</button>
+  <button id="lootBtn">⌕ Search nearby</button>
+  <button id="eatBtn">✚ Use supplies</button>
+ </div>
+ <div id="toast"></div>
+ <div id="inventory" class="panel"><b>BACKPACK</b><div id="items"></div></div>
+ <div id="help" class="panel">WASD / arrows: move<br>Mouse drag: rotate camera<br>Click / SPACE: attack<br>E: search nearby · B: build · C: craft<br>Gather trees, rocks and supply crates.</div>
+ <div id="crosshair"></div><div id="footer">Find supplies. Build shelter. Make it through the night.</div>
+</div>
+<div id="mobile">
+ <div id="stick"><div id="nub"></div></div>
+ <div id="mobileBtns"><button id="mAttack" class="hit">ATTACK</button><button id="mSearch">SEARCH</button><button id="mBuild">BUILD</button></div>
+</div>
+<div id="modal"><div class="box"><h2 id="modalTitle">Survival</h2><p class="muted" id="modalSub"></p><div id="modalContent"></div><div style="display:flex;justify-content:flex-end;margin-top:14px"><button id="closeModal">Close</button></div></div></div>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+(()=>{
+const root=document.getElementById('game');
+if(!window.THREE){root.innerHTML='<div style="padding:30px;color:white">Could not load the 3D engine. Check your internet connection and refresh.</div>';return;}
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x91a99a);scene.fog=new THREE.Fog(0x91a99a,35,100);
+const camera=new THREE.PerspectiveCamera(58,innerWidth/innerHeight,.1,180);
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;root.appendChild(renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xdcebdc,0x35463b,2));
+const sun=new THREE.DirectionalLight(0xffe5bb,2.1);sun.position.set(-25,35,18);sun.castShadow=true;sun.shadow.mapSize.set(1024,1024);scene.add(sun);
+const mat=(c,r=.9)=>new THREE.MeshStandardMaterial({color:c,roughness:r});
+const grass=mat(0x536d4a),dirt=mat(0x75664a),bark=mat(0x60412d),leaf=mat(0x294d35),leaf2=mat(0x426a40),stone=mat(0x858b82),metal=mat(0x697873),wood=mat(0x9b7045),crateMat=mat(0x8c653c),zSkin=mat(0x9aaa75),shirt=mat(0x6c4e4a),dark=mat(0x27302c),playerMat=mat(0xd0b58b);
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(180,180),grass);ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;scene.add(ground);
+const road=new THREE.Mesh(new THREE.PlaneGeometry(8,100),dirt);road.rotation.x=-Math.PI/2;road.position.set(9,.012,-7);scene.add(road);
+const grid=new THREE.GridHelper(180,90,0x718b69,0x718b69);grid.position.y=.015;grid.material.opacity=.13;grid.material.transparent=true;scene.add(grid);
+function box(parent,x,y,z,sx,sy,sz,m){const o=new THREE.Mesh(new THREE.BoxGeometry(sx,sy,sz),m);o.position.set(x,y,z);o.castShadow=true;o.receiveShadow=true;parent.add(o);return o}
+function sphere(parent,x,y,z,r,m){const o=new THREE.Mesh(new THREE.SphereGeometry(r,12,9),m);o.position.set(x,y,z);o.castShadow=true;parent.add(o);return o}
+function cylinder(parent,x,y,z,rt,rb,h,m,n=9){const o=new THREE.Mesh(new THREE.CylinderGeometry(rt,rb,h,n),m);o.position.set(x,y,z);o.castShadow=true;parent.add(o);return o}
+const player=new THREE.Group();scene.add(player);
+// High-contrast, deliberately chunky survivor model so the character is easy to spot.
+const jacket=mat(0xd17b35),pants=mat(0x303c36),skin=mat(0xe0b88e),pack=mat(0x394d42),boots=mat(0x202723),eye=mat(0x20221e);
+box(player,0,.78,0,.48,.58,.30,jacket); // torso
+box(player,0,.72,-.205,.25,.34,.055,pack); // backpack
+sphere(player,0,1.25,.015,.245,skin); // head
+box(player,0,1.055,.035,.30,.075,.29,mat(0x4a3528)); // neck/scarf
+box(player,0,1.32,.235,.22,.065,.025,eye); // brow / face detail
+box(player,-.34,.77,0,.15,.48,.16,jacket); // left arm
+box(player,.34,.77,0,.15,.48,.16,jacket); // right arm
+sphere(player,-.34,.50,.025,.09,skin);sphere(player,.34,.50,.025,.09,skin);
+box(player,-.135,.28,0,.17,.42,.20,pants);box(player,.135,.28,0,.17,.42,.20,pants);
+box(player,-.135,.075,.055,.19,.14,.29,boots);box(player,.135,.075,.055,.19,.14,.29,boots);
+player.position.set(0,0,0);
+let camYaw=0,camPitch=.35,keys={},joy={x:0,y:0},lastPointer=null,dragging=false;
+const obstacles=[],resources=[],zombies=[],crates=[],buildings=[];
+function addTree(x,z){const g=new THREE.Group();g.position.set(x,0,z);cylinder(g,0,.85,0,.18,.24,1.7,bark);const a=sphere(g,0,2,0,.85,leaf);a.scale.set(1,1.25,1);const b=sphere(g,.36,2.35,.12,.55,leaf2);b.scale.set(1,1.1,1);scene.add(g);obstacles.push({x,z,r:.75,obj:g,type:'tree',hp:3});resources.push({obj:g,type:'tree',hp:3,x,z});}
+function addRock(x,z){const g=new THREE.Group();g.position.set(x,0,z);const a=new THREE.Mesh(new THREE.DodecahedronGeometry(.65,0),stone);a.position.y=.45;a.scale.set(1.2,.8,1);a.castShadow=true;g.add(a);scene.add(g);obstacles.push({x,z,r:.65,obj:g,type:'rock',hp:3});resources.push({obj:g,type:'rock',hp:3,x,z});}
+function addCrate(x,z,kind='supplies'){const g=new THREE.Group();g.position.set(x,0,z);box(g,0,.4,0,.9,.8,.8,crateMat);for(let y of [.12,.4,.68])box(g,0,y,.411,.88,.045,.025,wood);box(g,0,.4,-.411,.88,.045,.025,wood);scene.add(g);crates.push({x,z,obj:g,opened:false,kind});}
+function addZombie(x,z){const g=new THREE.Group();g.position.set(x,0,z);cylinder(g,0,.62,0,.25,.3,.65,zSkin);sphere(g,0,1.08,0,.22,zSkin);box(g,0,.67,-.2,.38,.42,.15,shirt);box(g,-.14,.18,0,.14,.34,.16,dark);box(g,.14,.18,0,.14,.34,.16,dark);sphere(g,-.08,1.1,.19,.035,mat(0xc64e3f));sphere(g,.08,1.1,.19,.035,mat(0xc64e3f));scene.add(g);zombies.push({obj:g,hp:3,alive:true,attack:0,speed:1.05});}
+for(let i=0;i<95;i++){let x=(Math.random()-.5)*100,z=(Math.random()-.5)*100;if(Math.hypot(x,z)<8)continue;if(Math.abs(x-9)<5&&z<18&&z>-45)continue;Math.random()<.72?addTree(x,z):addRock(x,z);}
+addCrate(4,-5);addCrate(-8,-11);addCrate(15,-20);addCrate(-19,12,'food');addCrate(28,8);
+for(let i=0;i<13;i++){let a=Math.random()*Math.PI*2,r=12+Math.random()*35;addZombie(Math.cos(a)*r,Math.sin(a)*r);}
+function makeCamp(){const g=new THREE.Group();g.position.set(-2,0,3);box(g,0,.16,0,1.2,.25,1.2,stone);for(let i=0;i<5;i++){const l=box(g,0,.35,0,.13,.55,.13,wood);l.rotation.z=(i-2)*.28;}const flame=new THREE.Mesh(new THREE.ConeGeometry(.23,.6,8),new THREE.MeshBasicMaterial({color:0xff9a35}));flame.position.y=.62;g.add(flame);scene.add(g);buildings.push({obj:g,type:'campfire',x:-2,z:3});return g}makeCamp();
+const state={health:100,hunger:100,thirst:100,stamina:100,wood:0,stone:0,fiber:0,food:2,water:2,scrap:0,bandage:0,axe:0,wall:0,chest:0,fire:0,day:1,kills:0};
+let gameOver=false,elapsed=0,attackCooldown=0,toastTimer=0;
+function toast(s){const e=document.getElementById('toast');e.textContent=s;e.style.opacity=1;toastTimer=2.4;}
+function distance(a,b){return Math.hypot(a.x-b.x,a.z-b.z)}
+function nearest(arr,max=3){let best=null,bd=max;for(const a of arr){if(a.opened||a.dead)continue;const d=distance(player.position,a.obj.position);if(d<bd){best=a;bd=d;}}return best}
+function updateInventory(){document.getElementById('items').innerHTML=[['🪵 Wood',state.wood],['🪨 Stone',state.stone],['🌿 Fiber',state.fiber],['🥫 Food',state.food],['💧 Water',state.water],['⚙ Scrap',state.scrap],['🩹 Bandage',state.bandage],['🪓 Axe',state.axe],['🧱 Walls',state.wall],['📦 Chests',state.chest]].map(([n,v])=>`<span class="item">${n}: <b>${v}</b></span>`).join('');}
+function bar(id,v){document.getElementById(id).style.width=Math.max(0,v)+'%'}
+function showModal(title,sub,content){document.getElementById('modalTitle').textContent=title;document.getElementById('modalSub').textContent=sub;document.getElementById('modalContent').innerHTML=content;document.getElementById('modal').style.display='flex';}
+function closeModal(){document.getElementById('modal').style.display='none'}
+document.getElementById('closeModal').onclick=closeModal;
+function craft(){showModal('Workbench','Craft useful gear from scavenged resources.',`
+<div class="grid">
+<div class="recipe"><b>🪓 Stone hatchet</b><p>3 wood · 2 stone · 1 fiber. Gathers resources faster.</p><button onclick="window.makeItem('axe')">Craft</button></div>
+<div class="recipe"><b>🧱 Wooden wall</b><p>5 wood. Place a defensive wall at your feet.</p><button onclick="window.makeItem('wall')">Craft / Place</button></div>
+<div class="recipe"><b>📦 Storage chest</b><p>8 wood · 2 stone. Place a chest for your base.</p><button onclick="window.makeItem('chest')">Craft / Place</button></div>
+<div class="recipe"><b>🩹 Bandage</b><p>3 fiber. Restores 30 health.</p><button onclick="window.makeItem('bandage')">Craft</button></div>
+<div class="recipe"><b>🔥 Campfire</b><p>6 wood · 3 stone. A safe landmark for your base.</p><button onclick="window.makeItem('fire')">Craft / Place</button></div>
+</div>`)}
+window.makeItem=(type)=>{let cost={axe:[3,2,1],wall:[5,0,0],chest:[8,2,0],bandage:[0,0,3],fire:[6,3,0]}[type];if(state.wood<cost[0]||state.stone<cost[1]||state.fiber<cost[2]){toast('Not enough materials. Keep scavenging!');return}state.wood-=cost[0];state.stone-=cost[1];state.fiber-=cost[2];if(type==='axe'){state.axe++;toast('Stone hatchet crafted!');}else if(type==='bandage'){state.bandage++;toast('Bandage crafted.');}else{placeBuild(type);}updateInventory();};
+function placeBuild(type){const x=Math.round((player.position.x+Math.sin(camYaw)*2)*2)/2,z=Math.round((player.position.z+Math.cos(camYaw)*2)*2)/2;const g=new THREE.Group();g.position.set(x,0,z);
+if(type==='wall'){box(g,0,.65,0,2,1.3,.25,wood);for(let i=-1;i<=1;i++)box(g,i*.55,.65,.14,.06,1.35,.03,bark);state.wall++;}
+if(type==='chest'){box(g,0,.35,0,.9,.7,.7,crateMat);box(g,0,.73,0,.94,.12,.74,wood);state.chest++;}
+if(type==='fire'){cylinder(g,0,.1,0,.55,.55,.2,stone);for(let i=0;i<3;i++){let l=box(g,0,.3,0,.12,.45,.12,wood);l.rotation.z=i*.9;}const f=new THREE.Mesh(new THREE.ConeGeometry(.25,.65,8),new THREE.MeshBasicMaterial({color:0xff9233}));f.position.y=.62;g.add(f);state.fire++;}
+scene.add(g);buildings.push({obj:g,type,x,z});toast(type==='wall'?'Wall placed!':type==='chest'?'Storage chest placed!':'Campfire placed!');updateInventory();}
+function search(){let c=nearest(crates,3.3);if(c){c.opened=true;c.obj.visible=false;let loot=c.kind==='food'?{food:2,water:1,fiber:2,scrap:1}:{wood:2+Math.floor(Math.random()*4),stone:1+Math.floor(Math.random()*3),fiber:1+Math.floor(Math.random()*3),food:Math.random()<.55?1:0,water:Math.random()<.55?1:0,scrap:Math.random()<.65?1:0};Object.entries(loot).forEach(([k,v])=>state[k]+=v);toast('Crate looted! Supplies added to backpack.');updateInventory();return;}
+let r=nearest(resources,3.2);if(r){r.hp--;if(r.hp<=0){r.obj.visible=false;r.dead=true;obstacles.find(o=>o.obj===r.obj).dead=true;if(r.type==='tree'){state.wood+=state.axe?5:3;state.fiber+=1;}else state.stone+=3;toast(r.type==='tree'?'Tree harvested. Wood and fiber collected.':'Rock mined. Stone collected.');}else toast(r.type==='tree'?'Chop, chop… keep gathering!':'Keep hitting the rock!');updateInventory();return;}
+toast('Nothing to search nearby. Find a crate, tree, or rock.');}
+function attack(){if(attackCooldown>0||gameOver)return;attackCooldown=.5;state.stamina=Math.max(0,state.stamina-3);let target=null,bd=2.5;for(const z of zombies){if(!z.alive)continue;let d=distance(player.position,z.obj.position);if(d<bd){bd=d;target=z;}}if(target){target.hp-=1;target.obj.rotation.y+=.5;if(target.hp<=0){target.alive=false;target.obj.visible=false;state.kills++;state.scrap+=1;state.food+=Math.random()<.4?1:0;toast('Zombie down! +1 scrap.');updateInventory();}else toast('Hit landed! Keep moving!');}else toast('No enemy in range.');}
+function useSupplies(){if(state.food>0&&(state.hunger<85||state.health<70)){state.food--;state.hunger=Math.min(100,state.hunger+28);state.health=Math.min(100,state.health+4);toast('Ate food. Hunger restored.');}else if(state.water>0&&state.thirst<90){state.water--;state.thirst=Math.min(100,state.thirst+35);toast('Drank water.');}else if(state.bandage>0&&state.health<95){state.bandage--;state.health=Math.min(100,state.health+30);toast('Bandage used. +30 health.');}else toast('No supplies needed or available.');updateInventory();}
+function buildMenu(){showModal('Build your base','Choose what to place near your character.',`<p class="muted">Build pieces appear in the world and stay where you place them.</p><div class="grid"><div class="recipe"><b>🧱 Wooden wall</b><p>5 wood · current: ${state.wood}</p><button onclick="window.makeItem('wall')">Place wall</button></div><div class="recipe"><b>📦 Storage chest</b><p>8 wood + 2 stone</p><button onclick="window.makeItem('chest')">Place chest</button></div><div class="recipe"><b>🔥 Campfire</b><p>6 wood + 3 stone</p><button onclick="window.makeItem('fire')">Place campfire</button></div></div>`)}
+document.getElementById('buildBtn').onclick=buildMenu;document.getElementById('craftBtn').onclick=craft;document.getElementById('lootBtn').onclick=search;document.getElementById('eatBtn').onclick=useSupplies;
+document.getElementById('mAttack').onclick=attack;document.getElementById('mSearch').onclick=search;document.getElementById('mBuild').onclick=buildMenu;
+addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;if(e.key===' '){e.preventDefault();attack()}if(e.key.toLowerCase()==='e')search();if(e.key.toLowerCase()==='b')buildMenu();if(e.key.toLowerCase()==='c')craft();if(e.key.toLowerCase()==='f')useSupplies();});
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+renderer.domElement.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;lastPointer={x:e.clientX,y:e.clientY};dragging=true;renderer.domElement.setPointerCapture(e.pointerId);});
+renderer.domElement.addEventListener('pointermove',e=>{if(!dragging||!lastPointer)return;const dx=e.clientX-lastPointer.x,dy=e.clientY-lastPointer.y;camYaw-=dx*.006;camPitch=Math.max(.08,Math.min(.8,camPitch+dy*.003));lastPointer={x:e.clientX,y:e.clientY};});
+renderer.domElement.addEventListener('pointerup',()=>{dragging=false;lastPointer=null;});
+let stickActive=false,stickCenter={x:0,y:0};const stick=document.getElementById('stick'),nub=document.getElementById('nub');
+stick.addEventListener('pointerdown',e=>{stickActive=true;stick.setPointerCapture(e.pointerId);const r=stick.getBoundingClientRect();stickCenter={x:r.left+r.width/2,y:r.top+r.height/2};joyMove(e);});
+stick.addEventListener('pointermove',e=>{if(stickActive)joyMove(e)});stick.addEventListener('pointerup',()=>{stickActive=false;joy.x=joy.y=0;nub.style.transform='translate(0px,0px)'});stick.addEventListener('pointercancel',()=>{stickActive=false;joy.x=joy.y=0;nub.style.transform='translate(0px,0px)'});
+function joyMove(e){let dx=e.clientX-stickCenter.x,dy=e.clientY-stickCenter.y,l=Math.hypot(dx,dy),m=42;if(l>m){dx*=m/l;dy*=m/l}joy.x=dx/m;joy.y=dy/m;nub.style.transform=`translate(${dx}px,${dy}px)`}
+const clock=new THREE.Clock();
+function update(dt){if(gameOver)return;elapsed+=dt;attackCooldown=Math.max(0,attackCooldown-dt);state.hunger=Math.max(0,state.hunger-dt*.24);state.thirst=Math.max(0,state.thirst-dt*.36);state.stamina=Math.min(100,state.stamina+dt*9);
+if(state.hunger<=0||state.thirst<=0)state.health=Math.max(0,state.health-dt*1.6);
+if(state.health<=0){gameOver=true;showModal('YOU FELL IN THE WASTELAND','Your run ended. Refresh the page to start a new run.',`<p>Days survived: ${Math.max(1,Math.floor(elapsed/75)+1)} · Zombies defeated: ${state.kills}</p><button onclick="location.reload()">Start over</button>`);return;}
+let forward=(keys.w||keys.arrowup?1:0)-(keys.s||keys.arrowdown?1:0)-joy.y;
+let side=(keys.d||keys.arrowright?1:0)-(keys.a||keys.arrowleft?1:0)+joy.x;
+const len=Math.hypot(forward,side);if(len>1){forward/=len;side/=len;}
+if(len>.05){const speed=state.stamina>0?4.1:2.2;const dx=(Math.sin(camYaw)*forward+Math.cos(camYaw)*side)*speed*dt;const dz=(Math.cos(camYaw)*forward-Math.sin(camYaw)*side)*speed*dt;let nx=player.position.x+dx,nz=player.position.z+dz;
+if(Math.abs(nx)<75&&Math.abs(nz)<75){let blocked=false;for(const o of obstacles){if(o.dead)continue;if(Math.hypot(nx-o.x,nz-o.z)<o.r+.38){blocked=true;break;}}for(const b of buildings){if(b.type==='wall'&&Math.hypot(nx-b.x,nz-b.z)<1.3)blocked=true;}if(!blocked){player.position.x=nx;player.position.z=nz;player.rotation.y=Math.atan2(dx,dz);state.stamina=Math.max(0,state.stamina-dt*3);}}}
+for(const z of zombies){if(!z.alive)continue;const d=distance(player.position,z.obj.position);if(d<15){const dx=player.position.x-z.obj.position.x,dz=player.position.z-z.obj.position.z;if(d>1.25){z.obj.position.x+=dx/d*z.speed*dt;z.obj.position.z+=dz/d*z.speed*dt;z.obj.rotation.y=Math.atan2(dx,dz);}else{z.attack-=dt;if(z.attack<=0){state.health=Math.max(0,state.health-7);z.attack=1.25;toast('Zombie bite! Fight back or run!');}}}}
+for(const b of buildings){if(b.type==='fire'){const f=b.obj.children.find(c=>c.geometry&&c.geometry.type==='ConeGeometry');if(f)f.scale.y=.8+Math.random()*.4;}}
+bar('healthBar',state.health);bar('hungerBar',state.hunger);bar('thirstBar',state.thirst);bar('staminaBar',state.stamina);
+if(toastTimer>0){toastTimer-=dt;if(toastTimer<=0)document.getElementById('toast').style.opacity=0;}
+}
+function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDelta(),.05);update(dt);
+const p=player.position;const dist=8;camera.position.set(p.x+Math.sin(camYaw)*dist*Math.cos(camPitch),p.y+4+dist*Math.sin(camPitch),p.z+Math.cos(camYaw)*dist*Math.cos(camPitch));camera.lookAt(p.x,p.y+1,p.z);
+renderer.render(scene,camera);}
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+updateInventory();animate();
+})();
+</script>
+</body></html>
