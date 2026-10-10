@@ -201,22 +201,41 @@ function checkBuildingSpot(id,x,y,rotation=0){
  const recipe=BUILD_RECIPES.find(b=>b.id===id);if(!recipe)return {ok:false,reason:'Unknown part'};
  if(Math.abs(x)>WORLD_LIMIT-55||Math.abs(y)>WORLD_LIMIT-55)return {ok:false,reason:'Outside building bounds'};
  if(distance(x,y,state.player.x,state.player.y)>260)return {ok:false,reason:'Too far away — walk closer'};
- if(!hasCost(recipe.cost))return {ok:false,reason:'Not enough resources'};
+ const missing=Object.entries(recipe.cost).filter(([resource,needed])=>(state.inventory[resource]||0)<needed);
+ if(missing.length)return {ok:false,reason:'Need '+missing.map(([resource,needed])=>`${TYPES[resource]?.name||resource}: ${state.inventory[resource]||0}/${needed}`).join(', ')};
  if(id==='floor'){
   if(atCell(x,y,'foundation'))return {ok:false,reason:'Already has a foundation'};
-  if(buildings.length>1&&!supportsNearby(x,y)&&distance(x,y,0,-65)>GRID*3)return {ok:false,reason:'Extend from another foundation'};
+  // A new base may begin anywhere safe. Existing furniture must not force
+  // the first foundation to connect to a previous building or campsite.
+  if(atCell(x,y,'furniture')||atCell(x,y,'structure'))return {ok:false,reason:'Move blueprint away from an existing structure'};
  }else if(['wall','door','window','roof'].includes(id)){
   if(!atCell(x,y,'foundation'))return {ok:false,reason:'Place a foundation first'};
   if(atCell(x,y,buildingLayer(id)))return {ok:false,reason:'This slot is occupied'};
   if(id==='roof'&&buildings.filter(b=>['wall','door','window'].includes(b.kind)&&distance(x,y,b.x,b.y)<=GRID*1.6).length<2)return {ok:false,reason:'Roof needs at least two supports'};
  }else if(atCell(x,y,'furniture'))return {ok:false,reason:'Space occupied by furnishing'};
- if(id!=='roof')for(const n of nodes)if(nodeActive(n)&&['tree','rock'].includes(n.kind)&&distance(x,y,n.x,n.y)<n.size+22)return {ok:false,reason:'Clear the natural obstruction'};
+ if(id!=='roof')for(const n of nodes)if(nodeActive(n)&&['tree','rock','crate'].includes(n.kind)&&distance(x,y,n.x,n.y)<n.size+22)return {ok:false,reason:n.kind==='crate'?'Loot the supply crate before building here':'Clear the tree or rock first'};
  if(!['floor','roof'].includes(id)&&buildingFootprintCollision(x,y,id))return {ok:false,reason:'Character or infected in the way'};
  if(id==='roof'&&distance(x,y,state.player.x,state.player.y)<18)return {ok:true,reason:'Shelter ready'};
  return {ok:true,reason:'Ready to place'};
 }
 function previewCell(){return buildMode?{x:buildMode.x,y:buildMode.y}:null}
 function defaultBuildCell(){const p=state.player;return {x:snap(p.x+Math.sin(p.dir)*GRID*1.5),y:snap(p.y-Math.cos(p.dir)*GRID*1.5)};}
+// Begin with a green, buildable blueprint even if a crate or an old base
+// occupies the cell immediately in front of the survivor.
+function findOpenBuildCell(id,rotation=0){
+ const preferred=defaultBuildCell();
+ if(checkBuildingSpot(id,preferred.x,preferred.y,rotation).ok)return preferred;
+ const p=state.player,originX=snap(p.x),originY=snap(p.y),spots=[];
+ for(let iy=-4;iy<=4;iy++)for(let ix=-4;ix<=4;ix++){
+   const x=originX+ix*GRID,y=originY+iy*GRID;
+   if(distance(x,y,p.x,p.y)>245)continue;
+   const score=distance(x,y,preferred.x,preferred.y)+Math.abs(ix*iy)*.1;
+   spots.push({x,y,score});
+ }
+ spots.sort((a,b)=>a.score-b.score);
+ for(const c of spots)if(checkBuildingSpot(id,c.x,c.y,rotation).ok)return {x:c.x,y:c.y};
+ return preferred;
+}
 function updateBuildHUD(){
  const root=$('construction-hud');if(!root)return;
  if(!buildMode){root.classList.add('hidden');document.body.classList.remove('build-active');return}
@@ -229,9 +248,9 @@ function updateBuildHUD(){
  $('build-action').disabled=buildMode.mode==='place'?!result?.ok:!buildMode.target;
  $('build-remove').classList.toggle('hidden',buildMode.mode==='place');
  $('build-rotate').classList.toggle('hidden',buildMode.mode!=='place');
- $('build-material').textContent=buildMode.mode==='place'?resourceText(r.cost):`Edit existing structure`;
+ $('build-material').textContent=buildMode.mode==='place'?Object.entries(r.cost).map(([id,qty])=>`${TYPES[id]?.emoji||'▪'} ${state.inventory[id]||0}/${qty}`).join('  '):`Edit existing structure`;
 }
-function beginBuilding(id){if(!BUILD_RECIPES.some(x=>x.id===id))return;lastBuildId=id;const c=defaultBuildCell();buildMode={mode:'place',id,x:c.x,y:c.y,rotation:0,target:null};if(modal)closeModal();resetJoy();updateBuildHUD();showToast('BUILD MODE · Tap the ground to set the blueprint',2400)}
+function beginBuilding(id){if(!BUILD_RECIPES.some(x=>x.id===id))return;lastBuildId=id;const c=findOpenBuildCell(id);buildMode={mode:'place',id,x:c.x,y:c.y,rotation:0,target:null};if(modal)closeModal();resetJoy();updateBuildHUD();showToast('BUILD MODE · Tap an open patch of ground or press PLACE',2400)}
 function selectBuildingAt(x,y){let b=null,best=42;for(const xB of buildings){if(xB.starter)continue;let d=distance(x,y,xB.x,xB.y);if(d<best){best=d;b=xB}}return b}
 function placeBuilding(id){if(!buildMode||buildMode.id!==id){beginBuilding(id);return false}return confirmBuild()}
 function confirmBuild(){if(!buildMode)return false;
@@ -240,6 +259,7 @@ function confirmBuild(){if(!buildMode)return false;
  const recipe=BUILD_RECIPES.find(b=>b.id===id);if(!consumeCost(recipe.cost))return false;
  const hp=buildingHP(id);buildings.push({id:'b'+(++nextBuildingId)+'-'+Math.round(state.elapsed*100),kind:id,x,y,hp,maxhp:hp,level:1,rotation,open:false,contents:id==='storage'?{}:undefined});if(id==='wall')state.wallsBuilt++;
  effects.push({kind:'burst',x,y,t:0,life:.5,color:'#d2f3a0'});screenShake=Math.max(screenShake,1.4);showToast(`${recipe.name} constructed`,1350);
+ const next=findOpenBuildCell(id,rotation);buildMode.x=next.x;buildMode.y=next.y;
  updateBuildHUD();status();saveGame();return true;
 }
 function repairStructure(b){if(!b)return false;if(distance(state.player.x,state.player.y,b.x,b.y)>205){showToast('Move closer to repair');return false}if(b.hp>=b.maxhp){showToast('Already fully repaired');return false}const c={wood:2};if(!consumeCost(c)){showToast('Need 2 wood to repair');return false}b.hp=Math.min(b.maxhp,b.hp+Math.round(b.maxhp*.55));showToast('Structure repaired +55%');saveGame();updateBuildHUD();return true}
