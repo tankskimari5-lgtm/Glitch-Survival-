@@ -7,7 +7,8 @@
 const canvas=document.getElementById('world');
 const ctx=canvas.getContext('2d',{alpha:false});
 const $=id=>document.getElementById(id);
-const SAVE_KEY='glitch-survival-2d-v1';
+const SAVE_KEY='glitch-survival-2d-v1'; // Backward compatible with the original 2D save.
+const GRID=54;
 const WORLD_LIMIT=2750;
 const TAU=Math.PI*2;
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
@@ -33,23 +34,29 @@ const RECIPES=[
 ];
 const RECIPE_BY_ID=Object.fromEntries(RECIPES.map(r=>[r.id,r]));
 const BUILD_RECIPES=[
- {id:'wall',name:'Wooden wall',emoji:'🪵',desc:'Blocks zombies and marks out your base.',cost:{wood:5}},
- {id:'floor',name:'Wood floor',emoji:'▦',desc:'Lays a sturdy foundation.',cost:{wood:3}},
- {id:'campfire',name:'Campfire',emoji:'🔥',desc:'A warm point of light in the dark.',cost:{wood:4,stone:3}},
- {id:'storage',name:'Storage crate',emoji:'📦',desc:'Useful base furnishing.',cost:{wood:6,stone:2}}
+ {id:'floor',name:'Timber foundation',emoji:'▦',desc:'Structural base. Snaps to a 54-unit grid.',cost:{wood:3}},
+ {id:'wall',name:'Log wall',emoji:'🪵',desc:'A sturdy wall must stand on a foundation.',cost:{wood:5,fiber:1}},
+ {id:'door',name:'Hinged door',emoji:'🚪',desc:'Opens, closes and keeps infected out.',cost:{wood:5,scrap:1}},
+ {id:'window',name:'Barricaded window',emoji:'▤',desc:'A framed window with a protective sill.',cost:{wood:4,stone:1}},
+ {id:'roof',name:'Wood roof',emoji:'⌂',desc:'Shelter tile above a floored, supported room.',cost:{wood:4,fiber:2}},
+ {id:'storage',name:'Storage chest',emoji:'📦',desc:'An actual container where you can stash resources.',cost:{wood:6,stone:2}},
+ {id:'campfire',name:'Stone firepit',emoji:'🔥',desc:'Cook and warm your camp.',cost:{wood:4,stone:3}},
+ {id:'spikes',name:'Spiked barricade',emoji:'⚒',desc:'Hurts infected who walk into it.',cost:{wood:5,stone:2}}
 ];
 const MAX_TOOL_USES={axe:28,pickaxe:28,spear:40,torch:65};
 let viewport={w:1,h:1,dpr:1,scale:1};
 let camera={x:0,y:0};
 let gameOver=false,paused=false,modal=null,toastTimeout=0,hitFlash=0,screenShake=0,autosaveClock=0,enemySpawnClock=0,updateClock=0;
+let buildMode=null; // {id, x, y, rotation, mode}; all game state remains in the 2D world.
+let lastBuildId='floor';let nextBuildingId=0;let activeChest=null;
 const effects=[];
 const keys=new Set();
 const joy={x:0,y:0,pointer:null};
 let nodes=[],zombies=[],buildings=[];
 let nextZombieId=0;
-const state={player:{x:0,y:55,dir:0,anim:0,attacking:0,attackCooldown:0,hurt:0,footstep:0},hp:100,hunger:96,thirst:96,stamina:100,
+const state={player:{x:0,y:55,dir:0,aim:0,vx:0,vy:0,gait:0,anim:0,attacking:0,attackCooldown:0,hurt:0,footstep:0},hp:100,hunger:96,thirst:96,stamina:100,
  inventory:{wood:0,stone:0,fiber:0,cloth:0,scrap:0,leather:0,food:2,water:2,bandage:1,axe:0,pickaxe:0,spear:0,torch:0,shirt:0,hoodie:0,cargo:0,boots:0,backpack:0},
- equipment:{hand:null,chest:null,legs:'shorts',feet:'sandals',back:null},durability:{},elapsed:0,kills:0,treesCut:0,wallsBuilt:0,lootOpened:0,crafted:0,deathCount:0,flags:{},tutorialStep:0};
+ equipment:{hand:null,chest:null,legs:'shorts',feet:'sandals',back:null},stash:{},durability:{},elapsed:0,kills:0,treesCut:0,wallsBuilt:0,lootOpened:0,crafted:0,deathCount:0,flags:{},tutorialStep:0};
 
 // A deterministic world: trees, rocks, crates and fiber bushes have stable IDs for saves.
 function createWorld(){
@@ -70,7 +77,7 @@ function createWorld(){
  // Resource patch guaranteed near the starting clearing, away from the fire.
  const starters=[['tree',-164,-115],['tree',214,-35],['tree',-205,104],['tree',175,187],['rock',-105,-192],['rock',190,-185],['rock',-212,205],['bush',-95,158],['bush',66,-200],['bush',255,124],['crate',290,-83],['crate',-310,-42],['bush',-260,-220]];
  for(const [kind,x,y] of starters){let size=kind==='tree'?29:kind==='rock'?22:20;let hp=kind==='tree'||kind==='rock'?3:1;nodes.push({id:'s'+id++,kind,x,y,size,variant:id%19,hp,maxhp:hp,regenAt:0})}
- buildings=[{id:'starter-camp',kind:'campfire',x:0,y:-65,starter:true}];
+ buildings=[{id:'starter-camp',kind:'campfire',x:0,y:-65,starter:true,hp:100,maxhp:100,rotation:0}];
  const zrng=mulberry32(320919);
  zombies=[];
  for(let n=0;n<33;n++){
@@ -79,7 +86,7 @@ function createWorld(){
  }
 }
 function addZombie(x,y,persisted=false){
- const z={id:'z'+nextZombieId++,x,y,spawnX:x,spawnY:y,hp:3,maxhp:3,dir:0,walk:0,attackCooldown:Math.random()*1.1,stagger:0,deadUntil:0,aggro:0,persisted};
+ const z={id:'z'+nextZombieId++,x,y,spawnX:x,spawnY:y,hp:3,maxhp:3,dir:0,walk:0,attackCooldown:Math.random()*1.1,stagger:0,deadUntil:0,aggro:0,hitWall:0,variant:nextZombieId%5,persisted};
  zombies.push(z);return z;
 }
 function nodeActive(n){return !n.regenAt||n.regenAt<=state.elapsed}
@@ -91,7 +98,7 @@ function consumeCost(cost){if(!hasCost(cost))return false;for(const [k,n] of Obj
 function addItem(id,amount){if(!state.inventory.hasOwnProperty(id))return;state.inventory[id]+=amount;flashItem(id,amount)}
 function flashItem(id,amount){effects.push({kind:'text',x:state.player.x,y:state.player.y-39,t:0,life:1.15,text:`+${amount} ${TYPES[id]?.name||id}`,color:'#d7ffd0'})}
 function showToast(text,duration=2400){const el=$('toast');el.textContent=text;el.classList.add('show');clearTimeout(toastTimeout);toastTimeout=setTimeout(()=>el.classList.remove('show'),duration)}
-function setMission(){let msg='';if((state.inventory.axe||0)===0 && state.equipment.hand!=='axe')msg='CRAFT A STONE AXE · gather wood, stone and fiber';else if(state.treesCut<2)msg='CHOP TWO TREES · equip your axe, then GATHER';else if(state.wallsBuilt<1)msg='BUILD A WALL · open BUILD when you have 5 wood';else if(state.kills<2)msg='SURVIVE · defeat 2 infected';else msg='BUILD YOUR BASE · explore, loot and survive the night';$('mission-text').textContent=msg}
+function setMission(){let msg='';if((state.inventory.axe||0)===0 && state.equipment.hand!=='axe')msg='CRAFT A STONE AXE · gather wood, stone and fiber';else if(state.treesCut<2)msg='CHOP TWO TREES · equip your axe, then GATHER';else if(state.wallsBuilt<1)msg='BUILD FOUNDATIONS, THEN A WALL · 3 wood / foundation, 5 wood + fiber / wall';else if(state.kills<2)msg='SURVIVE · defeat 2 infected';else msg='BUILD YOUR BASE · explore, loot and survive the night';$('mission-text').textContent=msg}
 function status(){const d=1+Math.floor(state.elapsed/600);let mins=(6*60+Math.floor((state.elapsed%600)/600*24*60))%(24*60);let hh=String(Math.floor(mins/60)).padStart(2,'0'),mm=String(mins%60).padStart(2,'0');$('day-label').textContent='DAY '+String(d).padStart(2,'0');$('time-label').textContent=hh+':'+mm;$('weather-label').textContent=(mins<350||mins>1150)?'☾ NIGHT':'☀ CLEAR';for(const [name,value] of [['hp',state.hp],['hunger',state.hunger],['thirst',state.thirst],['stamina',state.stamina]]){$(name+'-bar').style.width=clamp(value,0,100)+'%';$(name+'-label').textContent=Math.ceil(value)}
  $('quick-food').textContent=state.inventory.food;$('quick-water').textContent=state.inventory.water;$('quick-bandage').textContent=state.inventory.bandage;$('quick-axe').textContent=state.inventory.axe;$('quick-spear').textContent=state.inventory.spear;
  document.querySelectorAll('.quick-slot').forEach(el=>el.classList.toggle('selected',(el.dataset.quick==='3'&&state.equipment.hand==='axe')||(el.dataset.quick==='4'&&state.equipment.hand==='spear')));
@@ -99,23 +106,25 @@ function status(){const d=1+Math.floor(state.elapsed/600);let mins=(6*60+Math.fl
 }
 function saveGame(silent=true){
  try{
-  const save={version:1,elapsed:state.elapsed,player:{x:state.player.x,y:state.player.y,dir:state.player.dir},hp:state.hp,hunger:state.hunger,thirst:state.thirst,stamina:state.stamina,inventory:state.inventory,equipment:state.equipment,durability:state.durability,kills:state.kills,treesCut:state.treesCut,wallsBuilt:state.wallsBuilt,lootOpened:state.lootOpened,crafted:state.crafted,deathCount:state.deathCount,flags:state.flags,
+  const save={version:2,elapsed:state.elapsed,player:{x:state.player.x,y:state.player.y,dir:state.player.dir},hp:state.hp,hunger:state.hunger,thirst:state.thirst,stamina:state.stamina,inventory:state.inventory,equipment:state.equipment,stash:state.stash,durability:state.durability,kills:state.kills,treesCut:state.treesCut,wallsBuilt:state.wallsBuilt,lootOpened:state.lootOpened,crafted:state.crafted,deathCount:state.deathCount,flags:state.flags,
    nodes:nodes.filter(n=>n.hp!==n.maxhp||n.regenAt>state.elapsed).map(n=>[n.id,n.hp,n.regenAt]),buildings:buildings.filter(b=>!b.starter),deadZombies:zombies.filter(z=>z.deadUntil>state.elapsed).map(z=>[z.id,z.deadUntil]),nextZombieId};
   localStorage.setItem(SAVE_KEY,JSON.stringify(save));$('save-indicator').textContent='● SAVED';if(!silent)showToast('Progress saved to this device');return true;
  }catch(e){console.warn('Save failed',e);$('save-indicator').textContent='○ SAVE UNAVAILABLE';return false}
 }
 function loadGame(){let raw;try{raw=localStorage.getItem(SAVE_KEY)}catch(e){return false}if(!raw)return false;try{
- const obj=JSON.parse(raw);if(obj.version!==1||!obj.player||typeof obj.player.x!=='number')return false;
+ const obj=JSON.parse(raw);if(![1,2].includes(obj.version)||!obj.player||typeof obj.player.x!=='number')return false;
  const numbers=['elapsed','hp','hunger','thirst','stamina','kills','treesCut','wallsBuilt','lootOpened','crafted','deathCount'];
  for(const k of numbers)if(Number.isFinite(obj[k]))state[k]=Math.max(0,obj[k]);
  state.hp=clamp(state.hp,0,100);state.hunger=clamp(state.hunger,0,100);state.thirst=clamp(state.thirst,0,100);state.stamina=clamp(state.stamina,0,100);
  state.player.x=clamp(obj.player.x,-WORLD_LIMIT,WORLD_LIMIT);state.player.y=clamp(obj.player.y,-WORLD_LIMIT,WORLD_LIMIT);state.player.dir=Number.isFinite(obj.player.dir)?obj.player.dir:0;
- for(const k of Object.keys(state.inventory))if(Number.isFinite(obj.inventory?.[k]))state.inventory[k]=clamp(Math.floor(obj.inventory[k]),0,9999);
+ for(const k of Object.keys(state.inventory)){if(Number.isFinite(obj.inventory?.[k]))state.inventory[k]=clamp(Math.floor(obj.inventory[k]),0,9999);if(Number.isFinite(obj.stash?.[k]))state.stash[k]=clamp(Math.floor(obj.stash[k]),0,9999)}
  const valid={hand:[null,'axe','pickaxe','spear','torch'],chest:[null,'shirt','hoodie'],legs:['shorts','cargo'],feet:['sandals','boots'],back:[null,'backpack']};
  for(const k of Object.keys(valid)){let value=obj.equipment?.[k];if(valid[k].includes(value))state.equipment[k]=value}
  for(const k of Object.keys(MAX_TOOL_USES))if(Number.isFinite(obj.durability?.[k]))state.durability[k]=clamp(Math.floor(obj.durability[k]),0,MAX_TOOL_USES[k]);
  const nodeMap=new Map(nodes.map(n=>[n.id,n]));if(Array.isArray(obj.nodes))for(const [id,hp,regenAt] of obj.nodes){const n=nodeMap.get(id);if(n){n.hp=clamp(Number(hp)||0,0,n.maxhp);n.regenAt=Math.max(0,Number(regenAt)||0)}}
- if(Array.isArray(obj.buildings))buildings.push(...obj.buildings.filter(b=>b&&['wall','floor','campfire','storage'].includes(b.kind)&&Number.isFinite(b.x)&&Number.isFinite(b.y)&&Math.abs(b.x)<WORLD_LIMIT&&Math.abs(b.y)<WORLD_LIMIT).slice(0,400));
+ if(Array.isArray(obj.buildings))for(const b of obj.buildings.filter(b=>b&&BUILD_RECIPES.some(r=>r.id===b.kind)&&Number.isFinite(b.x)&&Number.isFinite(b.y)&&Math.abs(b.x)<WORLD_LIMIT&&Math.abs(b.y)<WORLD_LIMIT).slice(0,550)){
+   const def=buildingHP(b.kind);buildings.push({...b,rotation:((Number(b.rotation)||0)%2+2)%2,maxhp:Number.isFinite(b.maxhp)?b.maxhp:def,hp:Number.isFinite(b.hp)?clamp(b.hp,1,def):def,level:clamp(Number(b.level)||1,1,3),open:!!b.open});
+ }
  const deadMap=new Map(Array.isArray(obj.deadZombies)?obj.deadZombies:[]);for(const z of zombies){const t=deadMap.get(z.id);if(Number.isFinite(t)&&t>state.elapsed){z.deadUntil=t;z.hp=0}}
  state.flags=(obj.flags&&typeof obj.flags==='object')?obj.flags:{};
  if(state.hp<=0){state.hp=80;state.player.x=0;state.player.y=60}
@@ -130,12 +139,75 @@ function equip(id){if(!TYPES[id])return;const slot=['axe','pickaxe','spear','tor
  const current=state.equipment[slot];state.equipment[slot]=current===id?(slot==='legs'?'shorts':slot==='feet'?'sandals':null):id;if(slot==='hand'&&!state.durability[id])state.durability[id]=MAX_TOOL_USES[id];showToast(state.equipment[slot]===id?`Equipped ${TYPES[id].name}`:`Unequipped ${TYPES[id].name}`);status();if(modal)renderModal();saveGame()}
 function toolWear(id,cost=1){if(state.equipment.hand!==id)return;let d=state.durability[id]??MAX_TOOL_USES[id];d-=cost;if(d<=0){state.inventory[id]=Math.max(0,state.inventory[id]-1);if(state.inventory[id]>0){d=MAX_TOOL_USES[id];showToast(`${TYPES[id].name} broke · using a spare`)}else{d=0;state.equipment.hand=null;showToast(`${TYPES[id].name} broke. Craft another.`)}}state.durability[id]=d}
 function craft(id){const recipe=RECIPE_BY_ID[id];if(!recipe)return;if(!consumeCost(recipe.cost)){showToast('Not enough resources to craft '+TYPES[id].name);return}addItem(id,1);state.crafted++;if(['axe','pickaxe','spear','torch'].includes(id)){if(!state.durability[id])state.durability[id]=MAX_TOOL_USES[id];if(!state.equipment.hand)state.equipment.hand=id;}showToast(`Crafted ${TYPES[id].name}!${state.equipment.hand===id?' Equipped':''}`);status();renderModal();saveGame()}
-function canPlaceAt(x,y){if(Math.abs(x)>WORLD_LIMIT-50||Math.abs(y)>WORLD_LIMIT-50)return false;if(distance(x,y,0,-65)<36)return false;for(const b of buildings)if(distance(x,y,b.x,b.y)<47)return false;for(const n of nodes)if(nodeActive(n)&&['tree','rock'].includes(n.kind)&&distance(x,y,n.x,n.y)<n.size+29)return false;return true}
-function placeBuilding(id){const recipe=BUILD_RECIPES.find(r=>r.id===id);if(!recipe)return;if(!hasCost(recipe.cost)){showToast(`Need ${resourceText(recipe.cost)} to build ${recipe.name}`);return}
- const p=state.player,dist=68;const x=Math.round((p.x+Math.sin(p.dir)*dist)/54)*54,y=Math.round((p.y-Math.cos(p.dir)*dist)/54)*54;
- if(!canPlaceAt(x,y)){showToast('Move to a clear spot to place this structure');return}
- consumeCost(recipe.cost);buildings.push({id:'b'+Date.now()+'-'+buildings.length,kind:id,x,y});if(id==='wall')state.wallsBuilt++;showToast(`${recipe.name} placed!`);status();renderModal();saveGame()}
-function gather(){if(paused||gameOver)return;const n=nearbyNode(92);if(!n){const z=nearbyZombie(81);if(z){attack();return}showToast('Move closer to a tree, rock, bush or crate');return}
+// Modular construction uses a persistent grid and multiple structural layers per cell.
+function buildingHP(kind){return ({floor:130,wall:165,door:115,window:115,roof:105,storage:105,campfire:95,spikes:90})[kind]||100}
+function buildingLayer(kind){return kind==='floor'?'foundation':kind==='roof'?'roof':['wall','door','window'].includes(kind)?'structure':'furniture'}
+function atCell(x,y,layer){return buildings.find(b=>!b.starter&&Math.abs(b.x-x)<2&&Math.abs(b.y-y)<2&&(!layer||buildingLayer(b.kind)===layer))}
+function snap(n){return Math.round(n/GRID)*GRID}
+function buildingDistance(b,x,y){return distance(x,y,b.x,b.y)}
+function nearbyStructure(max=95,condition=()=>true){let result=null,d=max;for(const b of buildings){if(!condition(b))continue;const near=buildingDistance(b,state.player.x,state.player.y);if(near<d){result=b;d=near}}return result}
+function buildingFootprintCollision(x,y,kind,playerCheck=false){if(['floor','roof'].includes(kind))return false;const r=kind==='spikes'?24:kind==='storage'?27:kind==='campfire'?24:20;return distance(x,y,state.player.x,state.player.y)<r+10 || zombies.some(z=>z.hp>0&&distance(x,y,z.x,z.y)<r+12)}
+function supportsNearby(x,y){return buildings.some(b=>b.kind==='floor'&&Math.abs(b.x-x)<=GRID+1&&Math.abs(b.y-y)<=GRID+1)}
+function checkBuildingSpot(id,x,y,rotation=0){
+ const recipe=BUILD_RECIPES.find(b=>b.id===id);if(!recipe)return {ok:false,reason:'Unknown part'};
+ if(Math.abs(x)>WORLD_LIMIT-55||Math.abs(y)>WORLD_LIMIT-55)return {ok:false,reason:'Outside building bounds'};
+ if(distance(x,y,state.player.x,state.player.y)>260)return {ok:false,reason:'Too far away — walk closer'};
+ if(!hasCost(recipe.cost))return {ok:false,reason:'Not enough resources'};
+ if(id==='floor'){
+  if(atCell(x,y,'foundation'))return {ok:false,reason:'Already has a foundation'};
+  if(buildings.length>1&&!supportsNearby(x,y)&&distance(x,y,0,-65)>GRID*3)return {ok:false,reason:'Extend from another foundation'};
+ }else if(['wall','door','window','roof'].includes(id)){
+  if(!atCell(x,y,'foundation'))return {ok:false,reason:'Place a foundation first'};
+  if(atCell(x,y,buildingLayer(id)))return {ok:false,reason:'This slot is occupied'};
+  if(id==='roof'&&!buildings.some(b=>['wall','door','window'].includes(b.kind)&&distance(x,y,b.x,b.y)<=GRID*1.6))return {ok:false,reason:'Roof needs a supporting wall'};
+ }else if(atCell(x,y,'furniture'))return {ok:false,reason:'Space occupied by furnishing'};
+ if(!['floor','roof'].includes(id)){
+  for(const n of nodes)if(nodeActive(n)&&['tree','rock'].includes(n.kind)&&distance(x,y,n.x,n.y)<n.size+22)return {ok:false,reason:'Clear the natural obstruction'};
+  if(buildingFootprintCollision(x,y,id))return {ok:false,reason:'Character or infected in the way'};
+ }
+ if(id==='roof'&&distance(x,y,state.player.x,state.player.y)<18)return {ok:true,reason:'Shelter ready'};
+ return {ok:true,reason:'Ready to place'};
+}
+function previewCell(){return buildMode?{x:buildMode.x,y:buildMode.y}:null}
+function defaultBuildCell(){const p=state.player;return {x:snap(p.x+Math.sin(p.dir)*GRID*1.5),y:snap(p.y-Math.cos(p.dir)*GRID*1.5)};}
+function updateBuildHUD(){
+ const root=$('construction-hud');if(!root)return;
+ if(!buildMode){root.classList.add('hidden');document.body.classList.remove('build-active');return}
+ root.classList.remove('hidden');document.body.classList.add('build-active');const r=BUILD_RECIPES.find(x=>x.id===buildMode.id);
+ $('build-piece-title').textContent=(r?.emoji||'⌂')+' '+(r?.name||'BUILD');
+ const result=buildMode.mode==='place'?checkBuildingSpot(buildMode.id,buildMode.x,buildMode.y,buildMode.rotation):null;
+ $('build-feedback').textContent=buildMode.mode==='place'?(result?.reason||''):'Tap an existing structure to select it';
+ $('build-feedback').classList.toggle('bad',!!result&&!result.ok);
+ $('build-action').textContent=buildMode.mode==='place'?'✓ PLACE':'⚒ REPAIR';
+ $('build-action').disabled=buildMode.mode==='place'?!result?.ok:!buildMode.target;
+ $('build-remove').classList.toggle('hidden',buildMode.mode==='place');
+ $('build-rotate').classList.toggle('hidden',buildMode.mode!=='place');
+ $('build-material').textContent=buildMode.mode==='place'?resourceText(r.cost):`Edit existing structure`;
+}
+function beginBuilding(id){if(!BUILD_RECIPES.some(x=>x.id===id))return;lastBuildId=id;const c=defaultBuildCell();buildMode={mode:'place',id,x:c.x,y:c.y,rotation:0,target:null};if(modal)closeModal();resetJoy();updateBuildHUD();showToast('BUILD MODE · Tap the ground to set the blueprint',2400)}
+function selectBuildingAt(x,y){let b=null,best=42;for(const xB of buildings){if(xB.starter)continue;let d=distance(x,y,xB.x,xB.y);if(d<best){best=d;b=xB}}return b}
+function placeBuilding(id){if(!buildMode||buildMode.id!==id){beginBuilding(id);return false}return confirmBuild()}
+function confirmBuild(){if(!buildMode)return false;
+ if(buildMode.mode==='edit')return repairStructure(buildMode.target);
+ const {id,x,y,rotation}=buildMode;const ok=checkBuildingSpot(id,x,y,rotation);if(!ok.ok){showToast(ok.reason,1700);updateBuildHUD();return false}
+ const recipe=BUILD_RECIPES.find(b=>b.id===id);if(!consumeCost(recipe.cost))return false;
+ const hp=buildingHP(id);buildings.push({id:'b'+(++nextBuildingId)+'-'+Math.round(state.elapsed*100),kind:id,x,y,hp,maxhp:hp,level:1,rotation,open:false,contents:id==='storage'?{}:undefined});if(id==='wall')state.wallsBuilt++;
+ effects.push({kind:'burst',x,y,t:0,life:.5,color:'#d2f3a0'});screenShake=Math.max(screenShake,1.4);showToast(`${recipe.name} constructed`,1350);
+ updateBuildHUD();status();saveGame();return true;
+}
+function repairStructure(b){if(!b)return false;if(distance(state.player.x,state.player.y,b.x,b.y)>205){showToast('Move closer to repair');return false}if(b.hp>=b.maxhp){showToast('Already fully repaired');return false}const c={wood:2};if(!consumeCost(c)){showToast('Need 2 wood to repair');return false}b.hp=Math.min(b.maxhp,b.hp+Math.round(b.maxhp*.55));showToast('Structure repaired +55%');saveGame();updateBuildHUD();return true}
+function demolishStructure(b){if(!b||b.starter)return false;const layer=buildingLayer(b.kind);
+ if(layer==='foundation'&&buildings.some(x=>x!==b&&!x.starter&&x.x===b.x&&x.y===b.y)){showToast('Remove walls, roof and furniture first');return false}
+ if(distance(state.player.x,state.player.y,b.x,b.y)>205){showToast('Move closer to dismantle');return false}
+ const recipe=BUILD_RECIPES.find(x=>x.id===b.kind);if(recipe){for(const [item,qty] of Object.entries(recipe.cost))addItem(item,Math.max(1,Math.floor(qty*.5)))}
+ buildings.splice(buildings.indexOf(b),1);if(b.kind==='wall')state.wallsBuilt=Math.max(0,state.wallsBuilt-1);buildMode.target=null;showToast('Structure dismantled · some materials recovered');saveGame();updateBuildHUD();return true;
+}
+function upgradeStructure(b){if(!b||b.starter)return false;if(!['wall','door','window'].includes(b.kind)){showToast('Only barriers can be reinforced');return false}if(b.level>=3){showToast('Already fully reinforced');return false}const price=b.level===1?{wood:3,stone:2}:{stone:5,scrap:2};if(!consumeCost(price)){showToast('Need '+resourceText(price));return false}b.level++;b.maxhp+=b.level===2?120:180;b.hp=b.maxhp;showToast('Barrier reinforced to tier '+b.level);saveGame();return true}
+function enterEditMode(){if(!buildMode){const c=defaultBuildCell();buildMode={mode:'edit',id:lastBuildId,x:c.x,y:c.y,rotation:0,target:null}}else{buildMode.mode='edit';buildMode.target=null}updateBuildHUD();showToast('Tap a built piece to edit or dismantle');}
+function stopBuilding(){buildMode=null;updateBuildHUD();showToast('Build mode closed',1000);saveGame()}
+function toggleDoor(b){if(!b||b.kind!=='door')return false;if(distance(b.x,b.y,state.player.x,state.player.y)>97)return false;b.open=!b.open;showToast(b.open?'Door opened':'Door closed',1000);saveGame();return true}
+function interactStructure(){const b=nearbyStructure(83,z=>z.kind==='door'||z.kind==='storage');if(!b)return false;if(b.kind==='door')return toggleDoor(b);if(b.kind==='storage'){activeChest=b;activeChest.contents||={};openModal('storage');return true}return false}
+function gather(){if(paused||gameOver)return;if(buildMode){if(buildMode.mode==='place')confirmBuild();else if(buildMode.target)repairStructure(buildMode.target);return}const nearbyDoor=nearbyStructure(70,b=>b.kind==='door'||b.kind==='storage');if(nearbyDoor){interactStructure();return}const n=nearbyNode(92);if(!n){const z=nearbyZombie(81);if(z){attack();return}showToast('Move closer to a tree, rock, bush or crate');return}
  const p=state.player;p.dir=Math.atan2(n.x-p.x,-(n.y-p.y));p.attacking=.33;p.attackCooldown=Math.max(p.attackCooldown,.23);
  effects.push({kind:'slash',x:n.x,y:n.y,t:0,life:.22,angle:p.dir,color:'#e6e2c1'});
  if(n.kind==='crate'){
@@ -174,7 +246,8 @@ function listResources(){return ['wood','stone','fiber','cloth','scrap','leather
 function renderModal(){if(!modal)return;$('modal-title').textContent={inventory:'Backpack',craft:'Crafting bench',build:'Build your base',gear:'Survivor equipment',settings:'Game & saves'}[modal]||'Survival';document.querySelectorAll('.modal-tab').forEach(t=>t.classList.toggle('current',t.dataset.tab===modal));const body=$('modal-content');
  if(modal==='inventory')body.innerHTML=`<p class="panel-note">Everything you collect stays here. Equip clothing and tools to change how your survivor looks and fights.</p><div class="section-title">SUPPLIES & EQUIPMENT</div><div class="items-grid">${itemCards(true)}</div><p class="field-help">Quick-use food, water, bandages, axe and spear from the bottom hotbar.</p>`;
  if(modal==='craft')body.innerHTML=`<p class="panel-note">Collect resources, craft survival tools, and wear the gear you make. An equipped axe chops trees faster.</p><div class="resources">${listResources()}</div><div class="items-grid">${RECIPES.map(r=>`<div class="item-card"><div class="item-top"><div class="item-emoji">${TYPES[r.id].emoji}</div><div class="item-title">${TYPES[r.id].name}</div></div><div class="item-desc">${r.desc}</div><div class="item-cost">${resourceText(r.cost)}</div><button class="small-btn" data-craft="${r.id}" ${hasCost(r.cost)?'':'disabled'}>CRAFT ITEM</button></div>`).join('')}</div>`;
- if(modal==='build')body.innerHTML=`<p class="panel-note">Structures are placed <strong>in front of your survivor</strong>. Face an open patch of ground, then tap PLACE. Your buildings are saved.</p><div class="resources">${listResources()}</div><div class="items-grid">${BUILD_RECIPES.map(r=>`<div class="item-card"><div class="item-top"><div class="item-emoji">${r.emoji}</div><div class="item-title">${r.name}</div></div><div class="item-desc">${r.desc}</div><div class="item-cost">${resourceText(r.cost)}</div><button class="small-btn" data-build="${r.id}" ${hasCost(r.cost)?'':'disabled'}>PLACE IN WORLD</button></div>`).join('')}</div>`;
+ if(modal==='build')body.innerHTML=`<p class="panel-note">REAL BUILDING · Select a piece, tap its grid square in the world, rotate, then confirm. Every structural piece requires a timber foundation. Open doors, repair barriers, or dismantle mistakes in EDIT mode.</p><div class="resources">${listResources()}</div><button class="small-btn secondary" data-edit="1">🔧 EDIT / REPAIR / DEMOLISH EXISTING STRUCTURES</button><div class="items-grid">${BUILD_RECIPES.map(r=>`<div class="item-card"><div class="item-top"><div class="item-emoji">${r.emoji}</div><div class="item-title">${r.name}</div></div><div class="item-desc">${r.desc}</div><div class="item-cost">${resourceText(r.cost)}</div><button class="small-btn" data-build="${r.id}">${hasCost(r.cost)?'SELECT BLUEPRINT':'PREVIEW · NEED MATERIALS'}</button></div>`).join('')}</div><p class="field-help">TIP: Start with FOUNDATIONS, then WALLS and a DOOR. Zombies attack closed barriers. Repaired walls protect your camp; upgrades cost extra resources.</p>`;
+ if(modal==='storage')body.innerHTML=`<p class="panel-note">Storage chest — each chest keeps its own inventory, saved with your base.</p><div class="items-grid">${['wood','stone','fiber','cloth','scrap','leather','food','water','bandage'].map(id=>`<div class="item-card"><div class="item-top"><div class="item-emoji">${TYPES[id].emoji}</div><div class="item-title">${TYPES[id].name}</div></div><div class="item-desc">Bag: ${state.inventory[id]} · Stored: ${activeChest?.contents?.[id]||0}</div><button class="small-btn" data-store="${id}" ${state.inventory[id]<1?'disabled':''}>STORE 1</button><button class="small-btn secondary" data-take="${id}" ${(activeChest?.contents?.[id]||0)<1?'disabled':''}>TAKE 1</button></div>`).join('')}</div>`;
  if(modal==='gear'){
  const display={hand:state.equipment.hand?TYPES[state.equipment.hand].name:'Bare hands',chest:state.equipment.chest?TYPES[state.equipment.chest].name:'Bare chest',legs:state.equipment.legs==='shorts'?'Ragged shorts':'Cargo trousers',feet:state.equipment.feet==='sandals'?'Worn sandals':'Worn boots',back:state.equipment.back?'Small backpack':'None'};
  const gearItems=['axe','pickaxe','spear','torch','shirt','hoodie','cargo','boots','backpack'].filter(id=>state.inventory[id]>0);
@@ -184,7 +257,17 @@ function renderModal(){if(!modal)return;$('modal-title').textContent={inventory:
 }
 function openModal(name){modal=name;paused=true;$('modal-shell').classList.remove('hidden');renderModal();joy.x=0;joy.y=0;}
 function closeModal(){modal=null;paused=false;$('modal-shell').classList.add('hidden');status()}
-function handleModalAction(e){const btn=e.target.closest('button');if(!btn)return;if(btn.dataset.craft)craft(btn.dataset.craft);else if(btn.dataset.build){placeBuilding(btn.dataset.build);renderModal()}else if(btn.dataset.equip)equip(btn.dataset.equip);else if(btn.dataset.use){useSupply(btn.dataset.use);renderModal()}else if(btn.dataset.save){saveGame(false);renderModal()}else if(btn.dataset.reset){if(confirm('Erase ONLY this new 2D save and start again?')){try{localStorage.removeItem(SAVE_KEY)}catch(e){}location.reload()}}}
+function handleModalAction(e){const btn=e.target.closest('button');if(!btn)return;
+ if(btn.dataset.craft)craft(btn.dataset.craft);
+ else if(btn.dataset.build)beginBuilding(btn.dataset.build);
+ else if(btn.dataset.edit){closeModal();enterEditMode()}
+ else if(btn.dataset.store){const k=btn.dataset.store;if(activeChest&&state.inventory[k]>0){state.inventory[k]--;activeChest.contents||={};activeChest.contents[k]=(activeChest.contents[k]||0)+1;saveGame();renderModal()}}
+ else if(btn.dataset.take){const k=btn.dataset.take;if(activeChest&&(activeChest.contents?.[k]||0)>0){activeChest.contents[k]--;state.inventory[k]++;saveGame();renderModal()}}
+ else if(btn.dataset.equip)equip(btn.dataset.equip);
+ else if(btn.dataset.use){useSupply(btn.dataset.use);renderModal()}
+ else if(btn.dataset.save){saveGame(false);renderModal()}
+ else if(btn.dataset.reset){if(confirm('Erase ONLY this 2D save and start again?')){try{localStorage.removeItem(SAVE_KEY)}catch(e){}location.reload()}}
+}
 
 // Canvas 2D rendering: world, vegetation, survivor, zombies and build pieces.
 function resize(){const rect=canvas.getBoundingClientRect();viewport.w=Math.max(1,rect.width);viewport.h=Math.max(1,rect.height);viewport.dpr=Math.min(window.devicePixelRatio||1,2);viewport.scale=viewport.w<480?.95:viewport.h<460?1:1.12;canvas.width=Math.round(viewport.w*viewport.dpr);canvas.height=Math.round(viewport.h*viewport.dpr);ctx.setTransform(viewport.dpr,0,0,viewport.dpr,0,0);ctx.imageSmoothingEnabled=true}
@@ -212,72 +295,244 @@ function drawTree(n){const x=px(n.x),y=py(n.y),s=n.size*viewport.scale;ellipse(x
 function drawRock(n){const x=px(n.x),y=py(n.y),s=n.size*viewport.scale;ellipse(x+3,y+s*.50,s*1.1,s*.48,'#1f362b56');polygon([[x-s*.93,y+s*.17],[x-s*.55,y-s*.66],[x+s*.25,y-s*.85],[x+s*.94,y-s*.25],[x+s*.82,y+s*.47],[x-s*.15,y+s*.70]],'#75857d','#48584f');polygon([[x-s*.93,y+s*.17],[x-s*.55,y-s*.66],[x+s*.05,y-s*.14],[x-s*.15,y+s*.70]],'#9ba79d');polygon([[x+s*.05,y-s*.14],[x+s*.25,y-s*.85],[x+s*.94,y-s*.25],[x+s*.82,y+s*.47]],'#5a6d64');ctx.strokeStyle='#c3c7b43d';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x-s*.38,y-s*.40);ctx.lineTo(x+s*.05,y-s*.15);ctx.stroke()}
 function drawBush(n){const x=px(n.x),y=py(n.y),s=n.size*viewport.scale;ellipse(x+2,y+s*.44,s*1.07,s*.47,'#203e2e42');ellipse(x-s*.36,y,s*.61,s*.54,'#356945');ellipse(x+s*.29,y-s*.18,s*.62,s*.60,'#497b49');ellipse(x,y-s*.42,s*.62,s*.56,'#548d4b');for(let k=0;k<5;k++){const a=k*TAU/5;ellipse(x+Math.cos(a)*s*.46,y-s*.2+Math.sin(a)*s*.4,s*.12,s*.13,'#8aad58')};}
 function drawCrate(n){const x=px(n.x),y=py(n.y),s=n.size*viewport.scale;ellipse(x+3,y+s*.75,s*.89,s*.45,'#28372a5b');polygon([[x-s*.83,y-s*.42],[x+s*.4,y-s*.58],[x+s*.93,y-s*.22],[x-s*.28,y-s*.05]],'#c5a574','#6a5134');polygon([[x-s*.83,y-s*.42],[x-s*.28,y-s*.05],[x-s*.28,y+s*.63],[x-s*.83,y+s*.29]],'#8b623d');polygon([[x-s*.28,y-s*.05],[x+s*.93,y-s*.22],[x+s*.93,y+s*.41],[x-s*.28,y+s*.63]],'#9e7648');ctx.strokeStyle='#dbbc80aa';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x+s*.02,y-s*.42);ctx.lineTo(x+s*.02,y+s*.52);ctx.moveTo(x-s*.84,y+s*.04);ctx.lineTo(x-s*.28,y+s*.39);ctx.moveTo(x-s*.25,y+s*.32);ctx.lineTo(x+s*.91,y+s*.13);ctx.stroke()}
-function drawWall(b){const x=px(b.x),y=py(b.y),s=viewport.scale;ellipse(x,y+18*s,36*s,14*s,'#111c1647');roundRect(x-29*s,y-23*s,58*s,43*s,5*s,'#5c4d33','#302d22');for(let i=0;i<4;i++){roundRect(x-27*s,y-20*s+i*10*s,54*s,8*s,1,'#86623c','#3e3829');ctx.strokeStyle='#d1ac6b48';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x-20*s,y-17*s+i*10*s);ctx.lineTo(x+15*s,y-17*s+i*10*s);ctx.stroke()}roundRect(x-26*s,y-19*s,6*s,35*s,1,'#493b2a');roundRect(x+19*s,y-19*s,6*s,35*s,1,'#493b2a')}
-function drawFloor(b){const x=px(b.x),y=py(b.y),s=viewport.scale;roundRect(x-27*s,y-27*s,54*s,54*s,2,'#806946','#634c36');for(let i=0;i<4;i++){ctx.strokeStyle='#bea07288';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(x-25*s,y+(-17+i*12)*s);ctx.lineTo(x+25*s,y+(-17+i*12)*s);ctx.stroke()}}
+function drawTimber(b,damage=false){const s=viewport.scale,x=px(b.x),y=py(b.y);ctx.save();ctx.translate(x,y);ctx.rotate((b.rotation||0)*Math.PI/2);
+ const tier=b.level||1,hurt=clamp(1-(b.hp??b.maxhp??1)/(b.maxhp||1),0,.95);
+ ellipse(3*s,8*s,31*s,11*s,'#18271d60');
+ roundRect(-29*s,-10*s,58*s,20*s,3*s,tier>=3?'#566667':tier===2?'#66564c':'#4e3928','#291e18');
+ for(let i=0;i<5;i++){
+   const yy=(-7+i*4)*s;roundRect(-28*s,yy,56*s,4*s,1*s,['#9a7449','#85613d','#ad8959','#805f40','#a7834c'][i],i%2?'#433426':'#5d442a');
+   ctx.beginPath();ctx.strokeStyle='#34281999';ctx.lineWidth=.7*s;ctx.moveTo(-23*s,yy+2*s);ctx.lineTo(24*s,yy+2*s);ctx.stroke();
+ }
+ for(const x0 of [-24,20]){roundRect(x0*s,-11*s,7*s,22*s,1.5*s,tier>1?'#566065':'#553b2a','#31251f');ellipse((x0+3)*s,-6*s,1*s,1*s,'#d2c2a1')}
+ if(tier>=2){ctx.strokeStyle='#a4b3a6';ctx.lineWidth=2*s;ctx.strokeRect(-26*s,-8*s,52*s,16*s)}
+ if(b.kind==='window'){
+   roundRect(-13*s,-9*s,26*s,18*s,2*s,'#1c312bdd','#bc9a62');
+   roundRect(-11*s,-7*s,22*s,14*s,1*s,'#5f837c70');
+   ctx.strokeStyle='#bba479';ctx.lineWidth=3*s;ctx.beginPath();ctx.moveTo(0,-7*s);ctx.lineTo(0,7*s);ctx.moveTo(-11*s,0);ctx.lineTo(11*s,0);ctx.stroke();
+ }
+ if(b.kind==='door'){
+   // A door is an actual passable opening when open.
+   roundRect(-24*s,-7*s,48*s,14*s,1*s,'#182c25','#bd9b68');
+   ctx.save();ctx.translate(-22*s,0);ctx.rotate(b.open?-Math.PI*.50:0);
+   roundRect(0,-9*s,44*s,18*s,2*s,'#8c623b','#e0b37b');
+   for(let k=1;k<4;k++){ctx.strokeStyle='#4d3523';ctx.lineWidth=1*s;ctx.beginPath();ctx.moveTo(4*s,(-8+k*4)*s);ctx.lineTo(40*s,(-8+k*4)*s);ctx.stroke()}
+   ellipse(39*s,0,2*s,2*s,'#f0cb70');ctx.restore();
+ }
+ if(hurt>.04){ctx.fillStyle=`rgba(31,26,21,${hurt*.60})`;ctx.fillRect(-26*s,-9*s,52*s,16*s);ctx.strokeStyle='#e8b78e';ctx.lineWidth=1.5*s;ctx.beginPath();ctx.moveTo(-11*s,-8*s);ctx.lineTo(4*s,4*s);ctx.lineTo(1*s,9*s);ctx.stroke()}
+ ctx.restore();drawBuildingHP(b);
+}
+function drawBuildingHP(b){if(b.hp===undefined||b.hp>=b.maxhp-.3)return;const s=viewport.scale,x=px(b.x),y=py(b.y);roundRect(x-20*s,y-32*s,40*s,4*s,1,'#271c1ab8');roundRect(x-20*s,y-32*s,40*s*clamp(b.hp/b.maxhp,0,1),4*s,1,b.hp/b.maxhp>.5?'#9adb8b':'#e5a27c')}
+function drawWall(b){drawTimber(b)}
+function drawFloor(b){const x=px(b.x),y=py(b.y),s=viewport.scale;
+ roundRect(x-27*s,y-27*s,54*s,54*s,1.2*s,'#735737','#4e3826');
+ for(let i=0;i<5;i++){
+   const yy=y+(-26+i*11)*s;
+   roundRect(x-25*s,yy,50*s,10*s,1*s,i%2?'#8c6d49':'#9e7c52','#5a422d');
+   ctx.strokeStyle='#d1ad7666';ctx.lineWidth=.8*s;ctx.beginPath();ctx.moveTo(x-21*s,yy+3*s);ctx.lineTo(x+18*s,yy+3*s);ctx.stroke();
+   for(let j=0;j<2;j++)ellipse(x+(-20+j*40)*s,yy+6*s,1*s,1*s,'#58402a');
+ }
+}
+function drawRoof(b){const x=px(b.x),y=py(b.y),s=viewport.scale;ctx.save();ctx.globalAlpha=distance(b.x,b.y,state.player.x,state.player.y)<90?.15:.70;
+ roundRect(x-27*s,y-27*s,54*s,54*s,1*s,'#354a3d','#bca074');
+ for(let j=0;j<7;j++){ctx.strokeStyle=j%2?'#66795e':'#829077';ctx.lineWidth=3*s;ctx.beginPath();ctx.moveTo(x-25*s,y+(-23+j*7)*s);ctx.lineTo(x+25*s,y+(-23+j*7)*s);ctx.stroke()}
+ ctx.strokeStyle='#c5a776';ctx.lineWidth=3*s;ctx.beginPath();ctx.moveTo(x,y-25*s);ctx.lineTo(x,y+25*s);ctx.stroke();ctx.restore();}
+function drawSpikes(b){const x=px(b.x),y=py(b.y),s=viewport.scale;ellipse(x,y+13*s,24*s,10*s,'#19261f55');ctx.save();ctx.translate(x,y);ctx.rotate((b.rotation||0)*Math.PI/2);
+ for(let k=-2;k<=2;k++){const xx=k*10*s;roundRect(xx-4*s,-15*s,8*s,32*s,1*s,'#725538','#352a20');polygon([[xx-5*s,-10*s],[xx,-25*s],[xx+5*s,-10*s]],'#bab29a','#3d4943')}
+ ctx.restore();drawBuildingHP(b)}
 function drawFire(b){const x=px(b.x),y=py(b.y),s=viewport.scale;ellipse(x+5*s,y+20*s,35*s,17*s,'#27362775');ellipse(x,y+10*s,25*s,15*s,'#786f5c');for(let i=0;i<7;i++){const a=i*TAU/7;ellipse(x+Math.cos(a)*20*s,y+10*s+Math.sin(a)*10*s,6*s,4*s,'#9d9b84',a)}for(let i=0;i<3;i++){const a=i*TAU/3;ctx.save();ctx.translate(x,y+10*s);ctx.rotate(a);roundRect(-18*s,-3*s,36*s,6*s,2*s,'#674930','#3d3025');ctx.restore()}const f=Math.sin(state.elapsed*8+b.x)*4*s;polygon([[x-10*s,y+3*s],[x-3*s,y-15*s+f],[x+2*s,y-25*s-f],[x+12*s,y+5*s]],'#ef8b3c');polygon([[x-4*s,y+3*s],[x+2*s,y-15*s+f*.5],[x+7*s,y+4*s]],'#f9d471');}
-function drawStorage(b){drawCrate({...b,size:22,variant:5})}
-function drawBuilding(b){if(b.kind==='wall')drawWall(b);else if(b.kind==='floor')drawFloor(b);else if(b.kind==='storage')drawStorage(b);else drawFire(b)}
-function drawHumanoid(x,y,dir,walk,infected=false,zombie=null){const s=viewport.scale,xx=px(x),yy=py(y);const moving=walk>0;ctx.save();ctx.translate(xx,yy);ctx.rotate(dir);const bob=moving?Math.sin(walk*9)*1.5*s:Math.sin(state.elapsed*2.2)*.65*s;const stride=moving?Math.sin(walk*9)*5*s:0;
- ellipse(4*s,12*s,18*s,8*s,'#172c1b72');
- // Outfit/leg layers below the torso make gear visible from overhead.
- const legs=infected?'#423e35':state.equipment.legs==='cargo'?'#495342':'#bda084';
- roundRect(-10*s,2*s+stride,8*s,17*s,3*s,legs);roundRect(2*s,2*s-stride,8*s,17*s,3*s,legs);
- const feet=infected?'#343b2d':state.equipment.feet==='boots'?'#493727':'#866547';
- ellipse(-6*s,18*s+stride,5*s,4*s,feet);ellipse(6*s,18*s-stride,5*s,4*s,feet);
- if(!infected && state.equipment.back==='backpack'){roundRect(-16*s,-12*s,32*s,27*s,8*s,'#685f3d','#403e30');roundRect(-11*s,-9*s,22*s,19*s,5*s,'#817348');roundRect(-7*s,-15*s,14*s,8*s,4*s,'#434b35')}
- const baseSkin=infected?'#91a17d':'#c08a63';
- const top=infected?'#51574a':state.equipment.chest==='hoodie'?'#4d6554':state.equipment.chest==='shirt'?'#a09d88':baseSkin;
- ctx.save();ctx.translate(0,bob);
- // T-shirt silhouette, arms and hands.
- ellipse(-13*s,-4*s,7*s,11*s,infected?'#9aa681':top,.20);ellipse(13*s,-4*s,7*s,11*s,infected?'#9aa681':top,-.20);
- ellipse(-17*s,5*s,4.3*s,5.4*s,baseSkin);ellipse(17*s,5*s,4.3*s,5.4*s,baseSkin);
- roundRect(-12*s,-16*s,24*s,26*s,8*s,top);
- if(!infected && !state.equipment.chest){ctx.strokeStyle='#825b49';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(0,-8*s);ctx.lineTo(0,8*s);ctx.stroke()}
- if(!infected && state.equipment.chest==='hoodie'){roundRect(-10*s,-15*s,20*s,6*s,2*s,'#6d7e62')}
- if(!infected && state.equipment.chest==='shirt'){ctx.strokeStyle='#626d61';ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(-9*s,7*s);ctx.lineTo(9*s,7*s);ctx.stroke()}
- // Head and hair, visually characteristic of the starting survivor.
- ellipse(0,-17*s,11*s,11*s,infected?'#8c9f76':'#d1a07a');
- if(infected){ellipse(-4*s,-20*s,2.4*s,2*s,'#c95450');ellipse(4*s,-20*s,2.4*s,2*s,'#d15b55');ellipse(0,-13*s,5*s,2*s,'#53694e');polygon([[-11*s,-24*s],[-7*s,-31*s],[4*s,-29*s],[11*s,-24*s]],'#4b4938')}
- else{ellipse(0,-24*s,11*s,6*s,'#423226');polygon([[-10*s,-25*s],[-7*s,-33*s],[-3*s,-30*s],[0,-34*s],[6*s,-31*s],[9*s,-29*s],[10*s,-25*s]],'#49372b');ellipse(-4*s,-16*s,1.6*s,1.2*s,'#493525');ellipse(4*s,-16*s,1.6*s,1.2*s,'#493525');ellipse(0,-12*s,4*s,2*s,'#67442c')}
- if(!infected){let hand=state.equipment.hand;const p=state.player;const swing=(p.attacking>0?Math.sin((.36-p.attacking)/.36*Math.PI)*.85:0);ctx.save();ctx.translate(16*s,1*s);ctx.rotate(swing);
- if(hand==='axe'){ctx.strokeStyle='#8b6945';ctx.lineWidth=4*s;ctx.beginPath();ctx.moveTo(0,8*s);ctx.lineTo(4*s,-23*s);ctx.stroke();polygon([[0,-22*s],[15*s,-26*s],[18*s,-17*s],[2*s,-15*s]],'#b9c0af','#536354')}
- if(hand==='pickaxe'){ctx.strokeStyle='#997952';ctx.lineWidth=3.3*s;ctx.beginPath();ctx.moveTo(0,8*s);ctx.lineTo(4*s,-25*s);ctx.stroke();polygon([[-9*s,-23*s],[3*s,-30*s],[15*s,-24*s],[4*s,-21*s]],'#b4c1b5')}
- if(hand==='spear'){ctx.strokeStyle='#8e6b40';ctx.lineWidth=3.2*s;ctx.beginPath();ctx.moveTo(0,10*s);ctx.lineTo(1*s,-38*s);ctx.stroke();polygon([[-6*s,-37*s],[1*s,-48*s],[7*s,-37*s]],'#b9c4b4')}
- if(hand==='torch'){ctx.strokeStyle='#936c46';ctx.lineWidth=5*s;ctx.beginPath();ctx.moveTo(0,7*s);ctx.lineTo(1*s,-21*s);ctx.stroke();ellipse(1*s,-23*s,6*s,9*s,'#ffac4c');ellipse(1*s,-25*s,3*s,5*s,'#ffe29a')}
- ctx.restore();}
+function drawStorage(b){const x=px(b.x),y=py(b.y),s=viewport.scale;ellipse(x+4*s,y+17*s,30*s,14*s,'#2231248a');roundRect(x-22*s,y-18*s,44*s,35*s,4*s,'#674b32','#3f3020');roundRect(x-21*s,y-20*s,42*s,30*s,3*s,'#a78350','#dbc18b');for(let i=0;i<3;i++){ctx.strokeStyle='#765535';ctx.lineWidth=2*s;ctx.beginPath();ctx.moveTo(x-17*s,y+(-11+i*9)*s);ctx.lineTo(x+17*s,y+(-11+i*9)*s);ctx.stroke()}roundRect(x-4*s,y-10*s,8*s,14*s,2*s,'#4e5e55','#d2b77c')}
+function drawBuilding(b){if(b.kind==='floor')drawFloor(b);else if(b.kind==='wall'||b.kind==='door'||b.kind==='window')drawTimber(b);else if(b.kind==='storage')drawStorage(b);else if(b.kind==='spikes')drawSpikes(b);else if(b.kind==='roof')drawRoof(b);else drawFire(b)}
+function drawConstructionGrid(){if(!buildMode)return;const s=viewport.scale;const screenLeft=camera.x-viewport.w/2/s,screenTop=camera.y-viewport.h/2/s;
+ ctx.save();ctx.lineWidth=.75;const x0=Math.floor(screenLeft/GRID)*GRID,y0=Math.floor(screenTop/GRID)*GRID;
+ for(let x=x0;x<screenLeft+viewport.w/s+GRID;x+=GRID){const xx=px(x-GRID/2);ctx.strokeStyle='#f4e7bd2b';ctx.beginPath();ctx.moveTo(xx,0);ctx.lineTo(xx,viewport.h);ctx.stroke()}
+ for(let y=y0;y<screenTop+viewport.h/s+GRID;y+=GRID){const yy=py(y-GRID/2);ctx.strokeStyle='#f4e7bd2b';ctx.beginPath();ctx.moveTo(0,yy);ctx.lineTo(viewport.w,yy);ctx.stroke()}
+ ctx.restore()}
+function drawConstructionGhost(){if(!buildMode)return;
+ const candidate=buildMode.mode==='edit'?buildMode.target:buildMode; if(!candidate)return;
+ const x=candidate.x,y=candidate.y,s=viewport.scale,valid=buildMode.mode==='place'?checkBuildingSpot(buildMode.id,x,y,buildMode.rotation).ok:true;
+ ctx.save();ctx.setLineDash([7*s,4*s]);ctx.strokeStyle=valid?'#baff96':'#ff847e';ctx.lineWidth=3*s;ctx.fillStyle=valid?'#8ad99a40':'#ed6f6a46';
+ const xx=px(x)-27*s,yy=py(y)-27*s;ctx.fillRect(xx,yy,54*s,54*s);ctx.strokeRect(xx,yy,54*s,54*s);ctx.setLineDash([]);
+ ctx.globalAlpha=.75;drawBuilding({kind:buildMode.mode==='place'?buildMode.id:candidate.kind,x,y,hp:100,maxhp:100,level:1,rotation:buildMode.rotation,open:false});ctx.globalAlpha=1;
+ ctx.font=`800 ${12*s}px system-ui`;ctx.textAlign='center';ctx.lineWidth=3*s;ctx.strokeStyle='#12231c';ctx.strokeText(valid?'✓':'×',px(x),py(y)-33*s);ctx.fillStyle=valid?'#dcffbd':'#ffc3bd';ctx.fillText(valid?'✓':'×',px(x),py(y)-33*s);ctx.restore();}
+// Layered procedural character sprites with independent step cycles, arm swing,
+// directional head, breathing and a timed weapon strike. No external sprite sheets.
+function drawHumanoid(x,y,dir,walk,infected=false,zombie=null){
+ const s=viewport.scale,xx=px(x),yy=py(y),p=state.player;
+ const walking=infected?(zombie&&zombie.aggro>.1):p.gait>.06;
+ const gait=infected?(zombie.walk||0):p.anim;
+ const intensity=infected?.53:clamp(p.gait,.08,1);
+ const step=walking?Math.sin(gait*8)*intensity:0;
+ const bounce=walking?Math.sin(gait*16)*1.4*s*intensity:Math.sin(state.elapsed*2.1)*.6*s;
+ const skin=infected?['#8f9b79','#89917a','#a1a28b','#7e8a7d','#b2a391'][zombie?.variant||0]:'#d09a75';
+ const shirt=infected?['#525e4b','#786759','#50564e','#575147','#6b5a4a'][zombie?.variant||0]:state.equipment.chest==='hoodie'?'#506558':state.equipment.chest==='shirt'?'#a7a18a':skin;
+ const pant=infected?['#393c35','#525347','#45433c','#404940','#4e483e'][zombie?.variant||0]:state.equipment.legs==='cargo'?'#4e5744':'#786951';
+ const injured=infected&&zombie.stagger>0;const hit=infected?Math.max(0,zombie.stagger):p.attacking;
+ const strike=!infected&&p.attacking>0 ? Math.sin(Math.PI*clamp(1-p.attacking/.35,0,1)) : 0;
+ ctx.save();ctx.translate(xx,yy);ctx.rotate(dir);if(injured)ctx.rotate(Math.sin(state.elapsed*34)*.14*injured);
+ // Ambient ground shadow remains rooted during torso and head bounce.
+ ellipse(5*s,16*s,19*s,9*s,'#17231976');
+ // Independent legs: knees, boots, trailing step shadow.
+ const legPose=step*6*s;
+ for(const side of [-1,1]){
+  ctx.save();ctx.translate(side*7*s,7*s-side*legPose);
+  ctx.rotate(-side*step*.14);
+  roundRect(-5*s,-2*s,10*s,17*s,4*s,pant,'#46382b');
+  ellipse(0,12*s,4.9*s,5*s,infected?'#302f29':state.equipment.feet==='boots'?'#4a3b2b':'#9a7353');
+  if(!infected&&state.equipment.feet!=='boots'){ctx.strokeStyle='#6b5237';ctx.lineWidth=1.5*s;ctx.beginPath();ctx.moveTo(-3*s,11*s);ctx.lineTo(4*s,11*s);ctx.stroke()}
+  ctx.restore();
+ }
+ // The torso translates with a little natural sway, not one rigid block.
+ ctx.save();ctx.translate(step*1.5*s,bounce);
+ if(!infected&&state.equipment.back==='backpack'){
+  roundRect(-18*s,-13*s,36*s,30*s,9*s,'#4c513a','#282f25');roundRect(-14*s,-10*s,28*s,23*s,5*s,'#80774e','#3f402e');
+  for(const ax of [-12,12])roundRect((ax-2)*s,-9*s,4*s,20*s,2*s,'#3d4535');
+  roundRect(-8*s,-19*s,16*s,9*s,3*s,'#5e6543','#353c2f')
+ }
+ // Arms swing opposite legs; front tool hand follows a deliberate attack arc.
+ for(const side of [-1,1]){
+  ctx.save();ctx.translate(side*14*s,-8*s);ctx.rotate(side*(step*.28)+(side===1?strike*-1.6:0));
+  ellipse(side*3*s,4*s,6*s,11*s,infected?skin:shirt,side*.13);
+  ellipse(side*4*s,14*s,4.7*s,5.3*s,skin);
+  if(side===1&&!infected){
+    const hand=state.equipment.hand;
+    ctx.save();ctx.translate(4*s,12*s);ctx.rotate(.23);
+    if(hand==='axe'||hand==='pickaxe'){
+      roundRect(-2*s,-27*s,4*s,39*s,2*s,'#9e7951','#463626');
+      if(hand==='axe')polygon([[-3*s,-27*s],[14*s,-31*s],[18*s,-22*s],[8*s,-18*s],[0,-19*s]],'#aeb8b3','#53615a');
+      else polygon([[-16*s,-26*s],[-1*s,-33*s],[17*s,-24*s],[3*s,-20*s]],'#b7bcb0','#56605b');
+    }else if(hand==='spear'){
+      roundRect(-1.7*s,-45*s,3.4*s,60*s,2*s,'#98764f');polygon([[-7*s,-45*s],[0,-59*s],[7*s,-45*s]],'#c1c9b9','#627067');
+    }else if(hand==='torch'){
+      roundRect(-2*s,-22*s,4*s,36*s,2*s,'#a47a48');ellipse(0,-23*s,6*s,10*s,'#f39649');ellipse(0,-26*s,3*s,7*s,'#ffdb73');
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+ }
+ // Shirt/body with cloth panel seams and bare-chest shading.
+ roundRect(-12*s,-17*s,24*s,27*s,8*s,shirt,infected?'#3b4a40':'#785d48');
+ if(!infected&&state.equipment.chest===null){
+  ctx.strokeStyle='#a47155';ctx.lineWidth=1*s;ctx.beginPath();ctx.moveTo(0,-6*s);ctx.lineTo(0,8*s);ctx.stroke();
+  ellipse(-5*s,-6*s,1.5*s,1*s,'#9a624f');ellipse(5*s,-6*s,1.5*s,1*s,'#9a624f');
+  ctx.strokeStyle='#edba90a6';ctx.beginPath();ctx.moveTo(-9*s,-11*s);ctx.quadraticCurveTo(-3*s,-9*s,-1*s,-5*s);ctx.moveTo(9*s,-11*s);ctx.quadraticCurveTo(3*s,-9*s,1*s,-5*s);ctx.stroke();
+ }else if(!infected){ctx.strokeStyle='#c4c5a25e';ctx.lineWidth=1*s;ctx.beginPath();ctx.moveTo(-9*s,-8*s);ctx.lineTo(-8*s,6*s);ctx.moveTo(9*s,-8*s);ctx.lineTo(8*s,6*s);ctx.stroke();}
+ if(!infected&&state.equipment.chest==='hoodie'){
+   ellipse(0,-14*s,13*s,8*s,'#354b3d');ellipse(0,-15*s,9*s,6*s,'#5f7861');
+ }
+ // Neck, asymmetric shadow face, hair tufts and expression.
+ roundRect(-4*s,-18*s,8*s,7*s,2*s,skin);
+ ellipse(0,-24*s,12*s,12*s,'#3f3228');ellipse(0,-22*s,10*s,10.8*s,skin);
+ ellipse(4*s,-22*s,4*s,7*s,'#ad775866');
+ if(infected){
+  const v=zombie?.variant||0;ellipse(-3*s,-24*s,2.5*s,2*s,'#d36754');ellipse(4*s,-24*s,2.2*s,2*s,'#d36754');
+  ctx.strokeStyle='#493b31';ctx.lineWidth=1.8*s;ctx.beginPath();ctx.moveTo(-5*s,-16*s);ctx.lineTo(5*s,-15*s);ctx.stroke();
+  ellipse(-9*s,-26*s,3*s,4*s,'#5a654d');
+  polygon([[-11*s,-29*s],[-7*s,-37*s],[-1*s,-32*s],[4*s,-38*s],[10*s,-30*s]],v%2?'#575747':'#3c3d33');
+ }else{
+  ellipse(0,-30*s,11*s,6*s,'#42352a');
+  polygon([[-12*s,-31*s],[-9*s,-39*s],[-4*s,-35*s],[0,-40*s],[6*s,-36*s],[11*s,-33*s]],'#3e3027');
+  for(const side of [-1,1]){ellipse(side*4*s,-24*s,1.3*s,1.4*s,'#39302a');}
+  ctx.strokeStyle='#694a39';ctx.lineWidth=1.2*s;ctx.beginPath();ctx.moveTo(-5*s,-19*s);ctx.lineTo(5*s,-19*s);ctx.stroke();
+  // Hair strand highlight, hood shadow, sweat/scratches.
+  ctx.strokeStyle='#76604a';ctx.lineWidth=.8*s;ctx.beginPath();ctx.moveTo(-9*s,-33*s);ctx.lineTo(-4*s,-35*s);ctx.moveTo(3*s,-36*s);ctx.lineTo(8*s,-33*s);ctx.stroke();
+ }
  ctx.restore();ctx.restore();
- if(infected&&zombie&&zombie.stagger>0)ellipse(xx,yy-12*s,15*s,25*s,'#ff525126')
+ if(injured)ellipse(xx,yy-10*s,15*s,25*s,'#f14e4230');
 }
 function drawZombie(z){if(z.hp<=0)return;drawHumanoid(z.x,z.y,z.dir,z.walk,true,z)}
 function drawPlayer(){drawHumanoid(state.player.x,state.player.y,state.player.dir,state.player.anim,false);if(state.player.hurt>0&&Math.floor(state.elapsed*14)%2===0){ellipse(px(state.player.x),py(state.player.y)-12,20*viewport.scale,29*viewport.scale,'#ff8b7540')}}
 function drawEffect(e){const t=e.t/e.life,s=viewport.scale,x=px(e.x),y=py(e.y);ctx.save();ctx.globalAlpha=clamp(1-t,0,1);if(e.kind==='text'){ctx.font=`900 ${13*s}px system-ui`;ctx.textAlign='center';ctx.lineWidth=3;ctx.strokeStyle='#12231d';ctx.strokeText(e.text,x,y-34*t*s);ctx.fillStyle=e.color;ctx.fillText(e.text,x,y-34*t*s)}
  else if(e.kind==='slash'){ctx.translate(x,y);ctx.rotate(e.angle);ctx.strokeStyle=e.color;ctx.lineWidth=4*s;ctx.lineCap='round';ctx.beginPath();ctx.arc(0,0,(22+t*23)*s,-.7,1.3);ctx.stroke()}
- else if(e.kind==='burst'){for(let k=0;k<9;k++){const a=k*TAU/9+t;ellipse(x+Math.cos(a)*42*t*s,y+Math.sin(a)*30*t*s,4*s*(1-t),4*s*(1-t),e.color)}}ctx.restore()}
+ else if(e.kind==='burst'){for(let k=0;k<9;k++){const a=k*TAU/9+t;ellipse(x+Math.cos(a)*42*t*s,y+Math.sin(a)*30*t*s,4*s*(1-t),4*s*(1-t),e.color)}}else if(e.kind==='dust'){ellipse(x+Math.sin(t*TAU)*4*s,y-t*13*s,(5+t*7)*s,(3+t*5)*s,'#d9d0a285')}ctx.restore()}
 function drawTargetMarkers(){let n=nearbyNode(85),z=nearbyZombie(65);if(n&&!paused){const x=px(n.x),y=py(n.y),r=(n.size+9)*viewport.scale;ctx.strokeStyle='#fff1b2bb';ctx.lineWidth=2;ctx.setLineDash([6,5]);ctx.beginPath();ctx.ellipse(x,y,r,r*.78,0,0,TAU);ctx.stroke();ctx.setLineDash([])}else if(z&&!paused){ctx.strokeStyle='#e79f8caf';ctx.lineWidth=2;ctx.beginPath();ctx.arc(px(z.x),py(z.y),29*viewport.scale,0,TAU);ctx.stroke()}}
 function drawNight(){let dayFrac=(state.elapsed%600)/600;const hour=(6+dayFrac*24)%24;let darkness=hour>=19?Math.min(.55,(hour-19)*.1+.2):hour<5?.56:hour<7?Math.max(0,.4-(hour-5)*.2):0;if(darkness<.02)return;ctx.fillStyle=`rgba(9,24,34,${darkness})`;ctx.fillRect(0,0,viewport.w,viewport.h);for(const b of buildings){if(b.kind==='campfire'&&visible(b.x,b.y,140)){let x=px(b.x),y=py(b.y);let g=ctx.createRadialGradient(x,y,8,x,y,195*viewport.scale);g.addColorStop(0,'#ffbb6d35');g.addColorStop(1,'#ffbb6d00');ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,195*viewport.scale,0,TAU);ctx.fill()}}if(state.equipment.hand==='torch'){let x=px(state.player.x),y=py(state.player.y);let g=ctx.createRadialGradient(x,y,4,x,y,150*viewport.scale);g.addColorStop(0,'#ffd58144');g.addColorStop(1,'#ffd58100');ctx.fillStyle=g;ctx.beginPath();ctx.arc(x,y,150*viewport.scale,0,TAU);ctx.fill()}}
-function render(){const {w,h}=viewport;ctx.setTransform(viewport.dpr,0,0,viewport.dpr,0,0);ctx.save();if(screenShake>.1)ctx.translate((Math.random()-.5)*screenShake,(Math.random()-.5)*screenShake);drawGround();const visibles=[];for(const n of nodes){if(!nodeActive(n)||!visible(n.x,n.y,105))continue;visibles.push({y:n.y,kind:'node',v:n})}for(const b of buildings)if(visible(b.x,b.y,100))visibles.push({y:b.y,kind:'building',v:b});for(const z of zombies)if(z.hp>0&&visible(z.x,z.y,100))visibles.push({y:z.y,kind:'zombie',v:z});visibles.push({y:state.player.y,kind:'player'});visibles.sort((a,b)=>a.y-b.y);for(const o of visibles){if(o.kind==='node'){if(o.v.kind==='tree')drawTree(o.v);else if(o.v.kind==='rock')drawRock(o.v);else if(o.v.kind==='bush')drawBush(o.v);else drawCrate(o.v)}else if(o.kind==='building')drawBuilding(o.v);else if(o.kind==='zombie')drawZombie(o.v);else drawPlayer()}
- for(const e of effects)if(visible(e.x,e.y,100))drawEffect(e);
- drawTargetMarkers();drawNight();if(hitFlash>.02){ctx.fillStyle=`rgba(163,18,27,${hitFlash*.16})`;ctx.fillRect(0,0,w,h)}ctx.restore()}
+function render(){const {w,h}=viewport;ctx.setTransform(viewport.dpr,0,0,viewport.dpr,0,0);ctx.save();if(screenShake>.1)ctx.translate((Math.random()-.5)*screenShake,(Math.random()-.5)*screenShake);drawGround();drawConstructionGrid();for(const b of buildings)if(b.kind==='floor'&&visible(b.x,b.y,90))drawFloor(b);const visibles=[];for(const n of nodes){if(!nodeActive(n)||!visible(n.x,n.y,105))continue;visibles.push({y:n.y,kind:'node',v:n})}for(const b of buildings)if(b.kind!=='floor'&&b.kind!=='roof'&&visible(b.x,b.y,100))visibles.push({y:b.y,kind:'building',v:b});for(const z of zombies)if(z.hp>0&&visible(z.x,z.y,100))visibles.push({y:z.y,kind:'zombie',v:z});visibles.push({y:state.player.y,kind:'player'});visibles.sort((a,b)=>a.y-b.y);for(const o of visibles){if(o.kind==='node'){if(o.v.kind==='tree')drawTree(o.v);else if(o.v.kind==='rock')drawRock(o.v);else if(o.v.kind==='bush')drawBush(o.v);else drawCrate(o.v)}else if(o.kind==='building')drawBuilding(o.v);else if(o.kind==='zombie')drawZombie(o.v);else drawPlayer()}
+ for(const b of buildings)if(b.kind==='roof'&&visible(b.x,b.y,90))drawRoof(b);for(const e of effects)if(visible(e.x,e.y,100))drawEffect(e);
+ if(buildMode)drawConstructionGhost();drawTargetMarkers();drawNight();if(hitFlash>.02){ctx.fillStyle=`rgba(163,18,27,${hitFlash*.16})`;ctx.fillRect(0,0,w,h)}ctx.restore()}
 
-function collides(x,y){if(Math.abs(x)>WORLD_LIMIT||Math.abs(y)>WORLD_LIMIT)return true;for(const n of nodes)if(nodeActive(n)&&['tree','rock'].includes(n.kind)&&distance(x,y,n.x,n.y)<n.size*.67+14)return true;for(const b of buildings)if(b.kind==='wall'&&distance(x,y,b.x,b.y)<36)return true;return false}
+function solidAt(b,x,y,r=11){
+ if(['floor','roof'].includes(b.kind)||b.kind==='door'&&b.open||b.kind==='campfire')return false;
+ const dx=x-b.x,dy=y-b.y;
+ if(['wall','door','window'].includes(b.kind))return (b.rotation||0)%2?Math.abs(dx)<11+r&&Math.abs(dy)<28+r:Math.abs(dx)<28+r&&Math.abs(dy)<11+r;
+ return Math.hypot(dx,dy)<(b.kind==='spikes'?18:26)+r;
+}
+function blockingBuilding(x,y,r=11){for(const b of buildings)if(solidAt(b,x,y,r))return b;return null}
+function collides(x,y){if(Math.abs(x)>WORLD_LIMIT||Math.abs(y)>WORLD_LIMIT)return true;for(const n of nodes)if(nodeActive(n)&&['tree','rock'].includes(n.kind)&&distance(x,y,n.x,n.y)<n.size*.67+14)return true;return !!blockingBuilding(x,y)}
+function damageStructure(b,n){if(!b||b.starter)return;const dmg=n||9;b.hp=(b.hp??buildingHP(b.kind))-dmg;effects.push({kind:'text',x:b.x,y:b.y-21,t:0,life:.5,text:'-'+dmg,color:'#ffb892'});if(b.hp<=0){const idx=buildings.indexOf(b);if(idx>=0)buildings.splice(idx,1);effects.push({kind:'burst',x:b.x,y:b.y,t:0,life:.6,color:'#ddbf82'});showToast('An infected smashed part of your base!');saveGame()}}
 function movementVector(){let dx=joy.x,dy=joy.y;if(keys.has('w')||keys.has('arrowup'))dy-=1;if(keys.has('s')||keys.has('arrowdown'))dy+=1;if(keys.has('a')||keys.has('arrowleft'))dx-=1;if(keys.has('d')||keys.has('arrowright'))dx+=1;let magnitude=Math.hypot(dx,dy);return magnitude>1?{dx:dx/magnitude,dy:dy/magnitude}: {dx,dy}}
 function update(dt){if(paused||gameOver)return;const p=state.player;state.elapsed+=dt;autosaveClock+=dt;updateClock+=dt;enemySpawnClock+=dt;
  p.attackCooldown=Math.max(0,p.attackCooldown-dt);p.attacking=Math.max(0,p.attacking-dt);p.hurt=Math.max(0,p.hurt-dt);hitFlash=Math.max(0,hitFlash-dt);screenShake=Math.max(0,screenShake-dt*26);
  state.hunger=Math.max(0,state.hunger-dt*.029);state.thirst=Math.max(0,state.thirst-dt*.04);state.stamina=Math.min(100,state.stamina+dt*9);
  if(state.hunger<=0||state.thirst<=0)state.hp=Math.max(0,state.hp-dt*2);if(state.hp<=0){die();return}
- const {dx,dy}=movementVector();const speed=state.stamina>1?141:91;const moving=Math.hypot(dx,dy)>.06;
- if(moving){const vx=dx*speed*dt,vy=dy*speed*dt;if(!collides(p.x+vx,p.y))p.x+=vx;if(!collides(p.x,p.y+vy))p.y+=vy;p.dir=Math.atan2(dx,-dy);p.anim+=dt*(state.stamina>1?2.0:1.2);state.stamina=Math.max(0,state.stamina-dt*.67)}else p.anim=0;
+ const {dx,dy}=movementVector();const len=Math.hypot(dx,dy);
+ const speed=state.stamina>1?162:103;
+ const targetVX=dx*speed,targetVY=dy*speed;
+ const accel=1-Math.exp(-dt*(len>.04?12:18));
+ p.vx+=(targetVX-p.vx)*accel;p.vy+=(targetVY-p.vy)*accel;
+ const moving=Math.hypot(p.vx,p.vy)>6;
+ if(moving){
+  const vx=p.vx*dt,vy=p.vy*dt;
+  if(!collides(p.x+vx,p.y))p.x+=vx;else p.vx*=.1;
+  if(!collides(p.x,p.y+vy))p.y+=vy;else p.vy*=.1;
+  const desired=Math.atan2(p.vx,-p.vy);
+  const turn=Math.atan2(Math.sin(desired-p.dir),Math.cos(desired-p.dir));
+  p.dir+=turn*Math.min(1,dt*12);
+  p.anim+=dt*(state.stamina>1?2.7:1.6)*clamp(Math.hypot(p.vx,p.vy)/speed,.1,1);
+  p.footstep+=dt*Math.hypot(p.vx,p.vy)/120;
+  if(p.footstep>.36){p.footstep=0;effects.push({kind:'dust',x:p.x,y:p.y+13,t:0,life:.55,color:'#dbd0ae'})}
+  state.stamina=Math.max(0,state.stamina-dt*.7);
+ }
+ p.gait+=(clamp(Math.hypot(p.vx,p.vy)/speed,0,1)-p.gait)*Math.min(1,dt*9);
  camera.x+=(p.x-camera.x)*Math.min(1,dt*7);camera.y+=(p.y-camera.y)*Math.min(1,dt*7);
  for(const n of nodes)if(n.regenAt>0&&n.regenAt<=state.elapsed){n.hp=n.maxhp;n.regenAt=0}
- for(const z of zombies){if(z.hp<=0){if(z.deadUntil<=state.elapsed){z.hp=3;z.x=z.spawnX;z.y=z.spawnY;z.attackCooldown=.8}continue}z.attackCooldown=Math.max(0,z.attackCooldown-dt);z.stagger=Math.max(0,z.stagger-dt);const d=distance(z.x,z.y,p.x,p.y);if(d<310&&z.stagger<=0){const vx=(p.x-z.x)/(d||1),vy=(p.y-z.y)/(d||1);z.dir=Math.atan2(vx,-vy);if(d>29){const zs=44*dt;z.x+=vx*zs;z.y+=vy*zs;z.walk+=dt*1.6}else if(z.attackCooldown<=0){hurtPlayer(10);z.attackCooldown=1.65;effects.push({kind:'slash',x:p.x,y:p.y-12,t:0,life:.32,angle:z.dir,color:'#fd9b86'})}}else if(d<440){z.walk+=dt*.1}}
+ for(const z of zombies){
+  if(z.hp<=0){if(z.deadUntil<=state.elapsed){z.hp=3;z.x=z.spawnX;z.y=z.spawnY;z.attackCooldown=.8}continue}
+  z.attackCooldown=Math.max(0,z.attackCooldown-dt);z.stagger=Math.max(0,z.stagger-dt);
+  const d=distance(z.x,z.y,p.x,p.y);
+  z.aggro=Math.max(0,Math.min(1,(330-d)/90));
+  if(d<330&&z.stagger<=0){
+   const ux=(p.x-z.x)/(d||1),uy=(p.y-z.y)/(d||1);
+   z.dir+=Math.atan2(Math.sin(Math.atan2(ux,-uy)-z.dir),Math.cos(Math.atan2(ux,-uy)-z.dir))*Math.min(1,dt*5);
+   if(d>32){
+    const zs=(z.variant===3?58:46)*dt;
+    const nx=z.x+ux*zs,ny=z.y+uy*zs;
+    const blocker=blockingBuilding(nx,ny,13);
+    if(blocker){z.hitWall-=dt;if(z.hitWall<=0){if(blocker.kind==='spikes'){z.hp-=.8;z.stagger=.24;if(z.hp<=0){z.hp=0;z.deadUntil=state.elapsed+165;state.kills++}}else damageStructure(blocker,blocker.level>1?5:9);z.hitWall=1.7}}
+    else{if(!collides(nx,z.y))z.x=nx; if(!collides(z.x,ny))z.y=ny}
+    z.walk+=dt*(z.variant===3?2.1:1.55);
+   }else if(z.attackCooldown<=0){hurtPlayer(10);z.attackCooldown=1.55;effects.push({kind:'slash',x:p.x,y:p.y-12,t:0,life:.32,angle:z.dir,color:'#fd9b86'})}
+  }else if(d<480){z.walk+=dt*.15}
+ }
  // Timed nearby infection pressure, capped for mobile performance.
  if(enemySpawnClock>42){enemySpawnClock=0;if(zombies.filter(z=>z.hp>0&&distance(z.x,z.y,p.x,p.y)<650).length<5&&zombies.length<80){const a=Math.random()*TAU,r=480+Math.random()*160;addZombie(clamp(p.x+Math.cos(a)*r,-WORLD_LIMIT,WORLD_LIMIT),clamp(p.y+Math.sin(a)*r,-WORLD_LIMIT,WORLD_LIMIT));}}
  for(let i=effects.length-1;i>=0;i--){effects[i].t+=dt;if(effects[i].t>effects[i].life)effects.splice(i,1)}
  if(autosaveClock>=12){autosaveClock=0;saveGame()}
- if(updateClock>.12){updateClock=0;status();updatePrompt()}
+ if(updateClock>.12){updateClock=0;status();updatePrompt();if(buildMode)updateBuildHUD()}
 }
-function updatePrompt(){const n=nearbyNode(87),z=nearbyZombie(69);const content=n?n.kind==='tree'?'✦ GATHER · CHOP TREE':n.kind==='rock'?'✦ GATHER · MINE ROCK':n.kind==='bush'?'✦ GATHER · PLANT FIBER':'✦ GATHER · LOOT CRATE':z?'⚔ ATTACK · INFECTED NEARBY':'MOVE · GATHER · CRAFT · BUILD';$('action-prompt').textContent=content}
+function updatePrompt(){if(buildMode){$('action-prompt').textContent='BUILD MODE · TAP WORLD TO MOVE BLUEPRINT';return}const door=nearbyStructure(78,b=>b.kind==='door'||b.kind==='storage');if(door){$('action-prompt').textContent=door.kind==='door'?'GATHER · OPEN / CLOSE DOOR':'GATHER · OPEN STORAGE';return}const n=nearbyNode(87),z=nearbyZombie(69);const content=n?n.kind==='tree'?'✦ GATHER · CHOP TREE':n.kind==='rock'?'✦ GATHER · MINE ROCK':n.kind==='bush'?'✦ GATHER · PLANT FIBER':'✦ GATHER · LOOT CRATE':z?'⚔ ATTACK · INFECTED NEARBY':'MOVE · GATHER · CRAFT · BUILD';$('action-prompt').textContent=content}
 let lastFrame=performance.now();function tick(t){let dt=Math.min((t-lastFrame)/1000,.055);lastFrame=t;update(dt);render();requestAnimationFrame(tick)}
+
+// World taps move blueprints; joystick continues to control the survivor.
+canvas.addEventListener('pointerdown',e=>{
+ if(!buildMode||paused)return;
+ e.preventDefault();const rect=canvas.getBoundingClientRect();
+ const x=camera.x+(e.clientX-rect.left-rect.width/2)/viewport.scale;
+ const y=camera.y+(e.clientY-rect.top-rect.height/2)/viewport.scale;
+ if(buildMode.mode==='edit'){
+  buildMode.target=selectBuildingAt(x,y);
+  if(buildMode.target){buildMode.x=buildMode.target.x;buildMode.y=buildMode.target.y;showToast('Selected '+buildMode.target.kind+' · '+Math.round(100*buildMode.target.hp/buildMode.target.maxhp)+'% integrity',1000)}
+ }else{buildMode.x=snap(x);buildMode.y=snap(y)}
+ updateBuildHUD();
+});
+for(const [id,cb] of Object.entries({
+ 'build-action':()=>confirmBuild(),
+ 'build-rotate':()=>{if(buildMode){buildMode.rotation=(buildMode.rotation+1)%2;updateBuildHUD()}},
+ 'build-stop':()=>stopBuilding(),
+ 'build-remove':()=>buildMode?.target&&demolishStructure(buildMode.target),
+ 'build-upgrade':()=>{if(buildMode?.target){upgradeStructure(buildMode.target);updateBuildHUD()}},
+ 'build-edit':()=>enterEditMode(),
+ 'build-select':()=>openModal('build')
+}))$(id).addEventListener('click',cb);
 
 // Touch and keyboard controls.
 const stick=$('joystick'),knob=$('joystick-inner');
@@ -296,7 +551,7 @@ $('modal-content').addEventListener('click',handleModalAction);
 for(const tab of document.querySelectorAll('[data-tab]'))tab.addEventListener('click',()=>{modal=tab.dataset.tab;renderModal()});
 $('respawn-btn').addEventListener('click',respawn);
 $('dismiss-onboarding').addEventListener('click',()=>{$('onboarding').classList.add('hidden');try{localStorage.setItem('glitch-survival-2d-tip','1')}catch(e){}});
-window.addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k))e.preventDefault();if(e.repeat&&['e',' ','i','c','b','g','escape'].includes(k))return;if(k==='escape'){if(modal)closeModal();else openModal('settings');return}if(modal){if(k==='i'||k==='g'||k==='b'||k==='c')closeModal();return}keys.add(k);if(k==='e'||k==='f')gather();else if(k===' ')attack();else if(k==='i')openModal('inventory');else if(k==='c')openModal('craft');else if(k==='b')openModal('build');else if(k==='g')openModal('gear');else if(/^[1-5]$/.test(k))useQuick(Number(k)-1)});
+window.addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(['arrowup','arrowdown','arrowleft','arrowright',' '].includes(k))e.preventDefault();if(e.repeat&&['e',' ','i','c','b','g','escape'].includes(k))return;if(k==='escape'){if(modal)closeModal();else if(buildMode)stopBuilding();else openModal('settings');return}if(modal){if(k==='i'||k==='g'||k==='b'||k==='c')closeModal();return}keys.add(k);if(k==='e'||k==='f')gather();else if(k===' ')attack();else if(k==='r'&&buildMode){buildMode.rotation=(buildMode.rotation+1)%2;updateBuildHUD()}else if(k==='enter'&&buildMode)confirmBuild();else if(k==='i')openModal('inventory');else if(k==='c')openModal('craft');else if(k==='b')openModal('build');else if(k==='g')openModal('gear');else if(/^[1-5]$/.test(k))useQuick(Number(k)-1)});
 window.addEventListener('keyup',e=>keys.delete(e.key.toLowerCase()));
 window.addEventListener('blur',()=>{keys.clear();resetJoy();saveGame()});
 window.addEventListener('pagehide',()=>saveGame());
@@ -312,6 +567,5 @@ if(resumed||(()=>{try{return localStorage.getItem('glitch-survival-2d-tip')==='1
 if(resumed)showToast('Welcome back to your 2D survivor camp!');else showToast('NEW WORLD · Day 1 begins. Gather resources and survive!',3700);
 requestAnimationFrame(tick);
 // Small read-only diagnostics for automated browser tests.
-window.__GLITCH_DIAGNOSTICS__={getSnapshot:()=>({player:{x:state.player.x,y:state.player.y},stats:{hp:state.hp,hunger:state.hunger,thirst:state.thirst},inventory:{...state.inventory},equipment:{...state.equipment},nodes:nodes.length,zombies:zombies.length,buildings:buildings.length,paused,modal,elapsed:state.elapsed}),getMove:movementVector};
+window.__GLITCH_DIAGNOSTICS__={getSnapshot:()=>({player:{x:state.player.x,y:state.player.y},stats:{hp:state.hp,hunger:state.hunger,thirst:state.thirst},inventory:{...state.inventory},equipment:{...state.equipment},nodes:nodes.length,zombies:zombies.length,buildings:buildings.length,buildMode:buildMode?{...buildMode}:null,paused,modal,elapsed:state.elapsed}),getMove:movementVector};
 })();
-
