@@ -323,7 +323,7 @@ function updateBuildHUD(){
  $('build-action').disabled=buildMode.mode==='place'?!result?.ok:!selected;
  $('build-remove').classList.toggle('hidden',buildMode.mode==='place');
  $('build-remove').disabled=buildMode.mode==='edit'&&!selected;
- $('build-remove').textContent=selected?'⌫ REMOVE '+(isBarrier(selected.kind)?'WALL':selected.kind.toUpperCase()):'⌫ REMOVE';
+ $('build-remove').textContent='⌫ REMOVE';
  $('build-rotate').classList.remove('hidden');
  $('build-rotate').textContent=buildMode.mode==='edit'?'▥ WALLS':'↻ ROTATE';
  $('build-material').textContent=buildMode.mode==='place'?Object.entries(r.cost).map(([id,qty])=>`${TYPES[id]?.emoji||'▪'} ${state.inventory[id]||0}/${qty}`).join('  '):
