@@ -275,12 +275,10 @@ function checkBuildingSpot(id,x,y,rotation=0){
  }else if(['wall','door','window','roof'].includes(id)){
   if(!atCell(x,y,'foundation'))return {ok:false,reason:'Place a foundation first'};
   if(atCell(x,y,buildingLayer(id)))return {ok:false,reason:'This slot is occupied'};
-  if(id==='roof'&&!buildings.some(b=>['wall','door','window'].includes(b.kind)&&distance(x,y,b.x,b.y)<=GRID*1.6))return {ok:false,reason:'Roof needs a supporting wall'};
+  if(id==='roof'&&buildings.filter(b=>['wall','door','window'].includes(b.kind)&&distance(x,y,b.x,b.y)<=GRID*1.6).length<2)return {ok:false,reason:'Roof needs at least two supports'};
  }else if(atCell(x,y,'furniture'))return {ok:false,reason:'Space occupied by furnishing'};
- if(!['floor','roof'].includes(id)){
-  for(const n of nodes)if(nodeActive(n)&&['tree','rock'].includes(n.kind)&&distance(x,y,n.x,n.y)<n.size+22)return {ok:false,reason:'Clear the natural obstruction'};
-  if(buildingFootprintCollision(x,y,id))return {ok:false,reason:'Character or infected in the way'};
- }
+ if(id!=='roof')for(const n of nodes)if(nodeActive(n)&&['tree','rock'].includes(n.kind)&&distance(x,y,n.x,n.y)<n.size+22)return {ok:false,reason:'Clear the natural obstruction'};
+ if(!['floor','roof'].includes(id)&&buildingFootprintCollision(x,y,id))return {ok:false,reason:'Character or infected in the way'};
  if(id==='roof'&&distance(x,y,state.player.x,state.player.y)<18)return {ok:true,reason:'Shelter ready'};
  return {ok:true,reason:'Ready to place'};
 }
