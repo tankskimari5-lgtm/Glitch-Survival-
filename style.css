@@ -36,3 +36,11 @@ button:focus-visible{outline:2px solid #cef7b5;outline-offset:3px}
 @media(max-height:500px) and (min-width:540px){.construction-hud{bottom:calc(5px + env(safe-area-inset-bottom));width:min(480px,calc(100vw - 300px));min-width:300px;padding:7px 8px 5px}.construction-title{font-size:12px}.construction-eyebrow{font-size:7px}.construction-feedback{font-size:9px;margin:4px 0}.construction-buttons button{padding:7px 2px;font-size:8px}.construction-material{font-size:8px;margin-top:3px}.build-active .action-controls{opacity:0}}
 @media(max-width:539px){.construction-hud{top:236px;bottom:auto;width:calc(100vw - 20px);max-width:370px;padding:7px}.construction-buttons{flex-wrap:wrap}.construction-buttons button{flex:1 1 25%;padding:9px 4px;font-size:9px}.construction-buttons .construction-place{flex:1 1 42%}.construction-feedback{font-size:10px}}
 @media(max-height:360px) and (min-width:540px){.construction-hud{bottom:3px;padding:4px 7px;min-width:280px}.construction-buttons button{padding:4px 2px}.construction-material{display:none}}
+
+/* V2.1 — joystick responds to mobile touch and gives visible movement feedback. */
+.joystick{overscroll-behavior:contain;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;isolation:isolate}
+.joystick.is-moving{background:#234934b3;border-color:#d6f8b6;box-shadow:0 0 0 4px #a8dc8c25,inset 0 0 18px #0b271a83,0 6px 20px #07181084}
+.joystick-inner{will-change:transform;transition:transform .025s linear;pointer-events:none}
+.joystick-label{pointer-events:none;white-space:nowrap}
+.joystick-status{position:absolute;top:-20px;left:50%;transform:translateX(-50%);pointer-events:none;color:#efffd7;font-size:9px;font-weight:900;letter-spacing:1px;white-space:nowrap;text-shadow:0 1px 5px #0a1c10}
+.joystick.is-moving .joystick-status{color:#b8f3a6}
