@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#14231d">
 <meta name="description" content="Glitch Survival — a top-down 2D browser survival game. Gather, craft, fight zombies and build your base.">
-<title>GLITCH SURVIVAL — V2.2 Foundation Fix</title>
+<title>GLITCH SURVIVAL — V2.3 Edge Building</title>
 <style>:root{color-scheme:dark;--ink:#e9f1e7;--muted:#adc0aa;--line:#59725f;--forest:#10201a;--accent:#bce9aa;--amber:#ebc27d;--danger:#e98680}
 *{box-sizing:border-box}html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#182a20;color:var(--ink);font-family:system-ui,-apple-system,Segoe UI,sans-serif;user-select:none;-webkit-user-select:none;touch-action:none;-webkit-tap-highlight-color:transparent}
 button{font:inherit;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
@@ -156,9 +156,9 @@ const RECIPES=[
 const RECIPE_BY_ID=Object.fromEntries(RECIPES.map(r=>[r.id,r]));
 const BUILD_RECIPES=[
  {id:'floor',name:'Timber foundation',emoji:'▦',desc:'Structural base. Snaps to a 54-unit grid.',cost:{wood:3}},
- {id:'wall',name:'Log wall',emoji:'🪵',desc:'A sturdy wall must stand on a foundation.',cost:{wood:5,fiber:1}},
- {id:'door',name:'Hinged door',emoji:'🚪',desc:'Opens, closes and keeps infected out.',cost:{wood:5,scrap:1}},
- {id:'window',name:'Barricaded window',emoji:'▤',desc:'A framed window with a protective sill.',cost:{wood:4,stone:1}},
+ {id:'wall',name:'Log wall',emoji:'🪵',desc:'Snaps onto any of the four edges of a foundation.',cost:{wood:5,fiber:1}},
+ {id:'door',name:'Hinged door',emoji:'🚪',desc:'Place in an empty wall-edge slot. Open it to walk through.',cost:{wood:5,scrap:1}},
+ {id:'window',name:'Barricaded window',emoji:'▤',desc:'Place on an empty foundation edge, like a wall.',cost:{wood:4,stone:1}},
  {id:'roof',name:'Wood roof',emoji:'⌂',desc:'Shelter tile above a floored, supported room.',cost:{wood:4,fiber:2}},
  {id:'storage',name:'Storage chest',emoji:'📦',desc:'An actual container where you can stash resources.',cost:{wood:6,stone:2}},
  {id:'campfire',name:'Stone firepit',emoji:'🔥',desc:'Cook and warm your camp.',cost:{wood:4,stone:3}},
@@ -312,11 +312,66 @@ function craft(id){const recipe=RECIPE_BY_ID[id];if(!recipe)return;if(!consumeCo
 // Modular construction uses a persistent grid and multiple structural layers per cell.
 function buildingHP(kind){return ({floor:130,wall:165,door:115,window:115,roof:105,storage:105,campfire:95,spikes:90})[kind]||100}
 function buildingLayer(kind){return kind==='floor'?'foundation':kind==='roof'?'roof':['wall','door','window'].includes(kind)?'structure':'furniture'}
+const isBarrier=kind=>kind==='wall'||kind==='door'||kind==='window';
+// Foundations live on tile centers. Walls, doors and windows live on the
+// FOUR EDGES of a floor tile. A shared edge between adjoining tiles is one
+// physical wall socket, not two coincident walls.
+function edgeSupported(x,y,rotation){
+ const half=GRID/2;
+ return rotation%2 ? !!(atCell(x-half,y,'foundation')||atCell(x+half,y,'foundation'))
+                   : !!(atCell(x,y-half,'foundation')||atCell(x,y+half,'foundation'));
+}
+function edgeOccupied(x,y){return buildings.find(b=>isBarrier(b.kind)&&Math.abs(b.x-x)<2&&Math.abs(b.y-y)<2)}
+function foundationEdges(){
+ const edges=new Map();
+ for(const b of buildings){if(b.kind!=='floor')continue;
+  const c=[{x:b.x,y:b.y-GRID/2,rotation:0},{x:b.x,y:b.y+GRID/2,rotation:0},
+   {x:b.x-GRID/2,y:b.y,rotation:1},{x:b.x+GRID/2,y:b.y,rotation:1}];
+  for(const e of c)edges.set(`${e.x},${e.y}`,e);
+ }
+ return Array.from(edges.values());
+}
+function nearestFoundationEdge(x,y,rotation=null,unoccupiedOnly=false,maxDistance=140){
+ let best=null,score=Infinity;
+ for(const e of foundationEdges()){
+  if(rotation!==null&&e.rotation!==rotation%2)continue;
+  if(unoccupiedOnly&&edgeOccupied(e.x,e.y))continue;
+  const dist=distance(x,y,e.x,e.y);
+  if(dist>maxDistance)continue;
+  if(dist<score){score=dist;best=e}
+ }
+ return best;
+}
+// This is used when choosing the initial blueprint or placing the next piece.
+function findOpenBarrierEdge(rotation=null,preferX=state.player.x,preferY=state.player.y){
+ let best=null,score=Infinity;
+ for(const e of foundationEdges()){
+  if(rotation!==null&&e.rotation!==rotation%2)continue;
+  if(edgeOccupied(e.x,e.y))continue;
+  const d=distance(e.x,e.y,state.player.x,state.player.y);
+  if(d>250)continue;
+  // Prefer building close to where the player is aiming, but don't require
+  // the player to stand on the edge to create the first wall.
+  const rank=distance(e.x,e.y,preferX,preferY)+d*.2;
+  if(rank<score){score=rank;best=e}
+ }
+ return best;
+}
 function atCell(x,y,layer){return buildings.find(b=>!b.starter&&Math.abs(b.x-x)<2&&Math.abs(b.y-y)<2&&(!layer||buildingLayer(b.kind)===layer))}
 function snap(n){return Math.round(n/GRID)*GRID}
 function buildingDistance(b,x,y){return distance(x,y,b.x,b.y)}
 function nearbyStructure(max=95,condition=()=>true){let result=null,d=max;for(const b of buildings){if(!condition(b))continue;const near=buildingDistance(b,state.player.x,state.player.y);if(near<d){result=b;d=near}}return result}
-function buildingFootprintCollision(x,y,kind,playerCheck=false){if(['floor','roof'].includes(kind))return false;const r=kind==='spikes'?24:kind==='storage'?27:kind==='campfire'?24:20;return distance(x,y,state.player.x,state.player.y)<r+10 || zombies.some(z=>z.hp>0&&distance(x,y,z.x,z.y)<r+12)}
+function buildingFootprintCollision(x,y,kind,rotation=0){
+ if(['floor','roof'].includes(kind))return false;
+ if(isBarrier(kind)){
+   const overlaps=(cx,cy,r)=>rotation%2
+     ? Math.abs(cx-x)<10+r&&Math.abs(cy-y)<GRID/2+r
+     : Math.abs(cx-x)<GRID/2+r&&Math.abs(cy-y)<10+r;
+   return overlaps(state.player.x,state.player.y,10)||zombies.some(z=>z.hp>0&&overlaps(z.x,z.y,10));
+ }
+ const r=kind==='spikes'?24:kind==='storage'?27:kind==='campfire'?24:20;
+ return distance(x,y,state.player.x,state.player.y)<r+10 || zombies.some(z=>z.hp>0&&distance(x,y,z.x,z.y)<r+12)
+}
 function supportsNearby(x,y){return buildings.some(b=>b.kind==='floor'&&Math.abs(b.x-x)<=GRID+1&&Math.abs(b.y-y)<=GRID+1)}
 function checkBuildingSpot(id,x,y,rotation=0){
  const recipe=BUILD_RECIPES.find(b=>b.id===id);if(!recipe)return {ok:false,reason:'Unknown part'};
@@ -329,13 +384,22 @@ function checkBuildingSpot(id,x,y,rotation=0){
   // A new base may begin anywhere safe. Existing furniture must not force
   // the first foundation to connect to a previous building or campsite.
   if(atCell(x,y,'furniture')||atCell(x,y,'structure'))return {ok:false,reason:'Move blueprint away from an existing structure'};
- }else if(['wall','door','window','roof'].includes(id)){
+ }else if(isBarrier(id)){
+  // A wall's midpoint MUST match an edge shared with a floor tile.
+  // Floors use coordinates divisible by GRID, while the edge midpoint is
+  // offset by exactly HALF a tile along one axis.
+  const half=GRID/2;
+  const fits=rotation%2 ? Math.abs(x-(snap(x-half)+half))<1&&Math.abs(y-snap(y))<1
+                        : Math.abs(y-(snap(y-half)+half))<1&&Math.abs(x-snap(x))<1;
+  if(!fits||!edgeSupported(x,y,rotation))return {ok:false,reason:'Tap the EDGE of a timber foundation'};
+  if(edgeOccupied(x,y))return {ok:false,reason:'Wall slot occupied · use EDIT to replace it'};
+ }else if(id==='roof'){
   if(!atCell(x,y,'foundation'))return {ok:false,reason:'Place a foundation first'};
-  if(atCell(x,y,buildingLayer(id)))return {ok:false,reason:'This slot is occupied'};
-  if(id==='roof'&&buildings.filter(b=>['wall','door','window'].includes(b.kind)&&distance(x,y,b.x,b.y)<=GRID*1.6).length<2)return {ok:false,reason:'Roof needs at least two supports'};
+  if(atCell(x,y,'roof'))return {ok:false,reason:'Roof already placed'};
+  if(buildings.filter(b=>isBarrier(b.kind)&&distance(x,y,b.x,b.y)<=GRID*.95).length<2)return {ok:false,reason:'Roof needs two surrounding walls or door supports'};
  }else if(atCell(x,y,'furniture'))return {ok:false,reason:'Space occupied by furnishing'};
  if(id!=='roof')for(const n of nodes)if(nodeActive(n)&&['tree','rock','crate'].includes(n.kind)&&distance(x,y,n.x,n.y)<n.size+22)return {ok:false,reason:n.kind==='crate'?'Loot the supply crate before building here':'Clear the tree or rock first'};
- if(!['floor','roof'].includes(id)&&buildingFootprintCollision(x,y,id))return {ok:false,reason:'Character or infected in the way'};
+ if(!['floor','roof'].includes(id)&&buildingFootprintCollision(x,y,id,rotation))return {ok:false,reason:'Character or infected in the way · step aside'};
  if(id==='roof'&&distance(x,y,state.player.x,state.player.y)<18)return {ok:true,reason:'Shelter ready'};
  return {ok:true,reason:'Ready to place'};
 }
@@ -343,7 +407,15 @@ function previewCell(){return buildMode?{x:buildMode.x,y:buildMode.y}:null}
 function defaultBuildCell(){const p=state.player;return {x:snap(p.x+Math.sin(p.dir)*GRID*1.5),y:snap(p.y-Math.cos(p.dir)*GRID*1.5)};}
 // Begin with a green, buildable blueprint even if a crate or an old base
 // occupies the cell immediately in front of the survivor.
-function findOpenBuildCell(id,rotation=0){
+function findOpenBuildCell(id,rotation=null){
+ if(isBarrier(id)){
+   const preferred=defaultBuildCell();
+   const edge=findOpenBarrierEdge(rotation,preferred.x,preferred.y);
+   if(edge)return edge;
+   // When no supported edges exist, preview the missing foundation rather
+   // than showing a valid-looking wall in the middle of a grass tile.
+   return {x:preferred.x,y:preferred.y-GRID/2,rotation:0};
+ }
  const preferred=defaultBuildCell();
  if(checkBuildingSpot(id,preferred.x,preferred.y,rotation).ok)return preferred;
  const p=state.player,originX=snap(p.x),originY=snap(p.y),spots=[];
@@ -363,7 +435,7 @@ function updateBuildHUD(){
  root.classList.remove('hidden');document.body.classList.add('build-active');const r=BUILD_RECIPES.find(x=>x.id===buildMode.id);
  $('build-piece-title').textContent=(r?.emoji||'⌂')+' '+(r?.name||'BUILD');
  const result=buildMode.mode==='place'?checkBuildingSpot(buildMode.id,buildMode.x,buildMode.y,buildMode.rotation):null;
- $('build-feedback').textContent=buildMode.mode==='place'?(result?.reason||''):'Tap an existing structure to select it';
+ $('build-feedback').textContent=buildMode.mode==='place'?(result?.ok&&isBarrier(buildMode.id)?'✓ Snapped to a foundation edge · ready to place':(result?.reason||'')):'Tap an existing structure to select it';
  $('build-feedback').classList.toggle('bad',!!result&&!result.ok);
  $('build-action').textContent=buildMode.mode==='place'?'✓ PLACE':'⚒ REPAIR';
  $('build-action').disabled=buildMode.mode==='place'?!result?.ok:!buildMode.target;
@@ -371,7 +443,15 @@ function updateBuildHUD(){
  $('build-rotate').classList.toggle('hidden',buildMode.mode!=='place');
  $('build-material').textContent=buildMode.mode==='place'?Object.entries(r.cost).map(([id,qty])=>`${TYPES[id]?.emoji||'▪'} ${state.inventory[id]||0}/${qty}`).join('  '):`Edit existing structure`;
 }
-function beginBuilding(id){if(!BUILD_RECIPES.some(x=>x.id===id))return;lastBuildId=id;const c=findOpenBuildCell(id);buildMode={mode:'place',id,x:c.x,y:c.y,rotation:0,target:null};if(modal)closeModal();resetJoy();updateBuildHUD();showToast('BUILD MODE · Tap an open patch of ground or press PLACE',2400)}
+function beginBuilding(id){
+ if(!BUILD_RECIPES.some(x=>x.id===id))return;
+ lastBuildId=id;
+ const c=findOpenBuildCell(id);
+ buildMode={mode:'place',id,x:c.x,y:c.y,rotation:c.rotation||0,target:null};
+ if(modal)closeModal();resetJoy();updateBuildHUD();
+ showToast(isBarrier(id)?'Tap any foundation EDGE to place a wall, door or window':
+   'BUILD MODE · Tap an open patch of ground or press PLACE',2600);
+}
 function selectBuildingAt(x,y){let b=null,best=42;for(const xB of buildings){if(xB.starter)continue;let d=distance(x,y,xB.x,xB.y);if(d<best){best=d;b=xB}}return b}
 function placeBuilding(id){if(!buildMode||buildMode.id!==id){beginBuilding(id);return false}return confirmBuild()}
 function confirmBuild(){if(!buildMode)return false;
@@ -380,15 +460,27 @@ function confirmBuild(){if(!buildMode)return false;
  const recipe=BUILD_RECIPES.find(b=>b.id===id);if(!consumeCost(recipe.cost))return false;
  const hp=buildingHP(id);buildings.push({id:'b'+(++nextBuildingId)+'-'+Math.round(state.elapsed*100),kind:id,x,y,hp,maxhp:hp,level:1,rotation,open:false,contents:id==='storage'?{}:undefined});if(id==='wall')state.wallsBuilt++;
  effects.push({kind:'burst',x,y,t:0,life:.5,color:'#d2f3a0'});screenShake=Math.max(screenShake,1.4);showToast(`${recipe.name} constructed`,1350);
- const next=findOpenBuildCell(id,rotation);buildMode.x=next.x;buildMode.y=next.y;
+ const next=findOpenBuildCell(id,isBarrier(id)?null:rotation);
+ buildMode.x=next.x;buildMode.y=next.y;
+ if(isBarrier(id))buildMode.rotation=next.rotation||0;
  updateBuildHUD();status();saveGame();return true;
 }
 function repairStructure(b){if(!b)return false;if(distance(state.player.x,state.player.y,b.x,b.y)>205){showToast('Move closer to repair');return false}if(b.hp>=b.maxhp){showToast('Already fully repaired');return false}const c={wood:2};if(!consumeCost(c)){showToast('Need 2 wood to repair');return false}b.hp=Math.min(b.maxhp,b.hp+Math.round(b.maxhp*.55));showToast('Structure repaired +55%');saveGame();updateBuildHUD();return true}
 function demolishStructure(b){if(!b||b.starter)return false;const layer=buildingLayer(b.kind);
- if(layer==='foundation'&&buildings.some(x=>x!==b&&!x.starter&&x.x===b.x&&x.y===b.y)){showToast('Remove walls, roof and furniture first');return false}
+ if(layer==='foundation'&&buildings.some(x=>{
+   if(x===b||x.starter)return false;
+   if(Math.abs(x.x-b.x)<2&&Math.abs(x.y-b.y)<2)return true;
+   // Keep a wall if an adjacent foundation can continue to support it.
+   if(!isBarrier(x.kind))return false;
+   if(Math.abs(x.x-b.x)>GRID||Math.abs(x.y-b.y)>GRID)return false;
+   const supportedElsewhere=buildings.some(other=>other!==b&&other.kind==='floor'&&
+     (x.rotation%2 ? (Math.abs(other.x-(x.x-GRID/2))<2||Math.abs(other.x-(x.x+GRID/2))<2)&&Math.abs(other.y-x.y)<2
+                   : (Math.abs(other.y-(x.y-GRID/2))<2||Math.abs(other.y-(x.y+GRID/2))<2)&&Math.abs(other.x-x.x)<2));
+   return edgeSupported(x.x,x.y,x.rotation)&&!supportedElsewhere;
+ })){showToast('Remove supported walls, roof and furniture before this foundation');return false}
  if(distance(state.player.x,state.player.y,b.x,b.y)>205){showToast('Move closer to dismantle');return false}
  const recipe=BUILD_RECIPES.find(x=>x.id===b.kind);if(recipe){for(const [item,qty] of Object.entries(recipe.cost))addItem(item,Math.max(1,Math.floor(qty*.5)))}
- buildings.splice(buildings.indexOf(b),1);if(b.kind==='wall')state.wallsBuilt=Math.max(0,state.wallsBuilt-1);buildMode.target=null;showToast('Structure dismantled · some materials recovered');saveGame();updateBuildHUD();return true;
+ buildings.splice(buildings.indexOf(b),1);if(b.kind==='wall')state.wallsBuilt=Math.max(0,state.wallsBuilt-1);if(buildMode)buildMode.target=null;showToast('Structure dismantled · some materials recovered');saveGame();updateBuildHUD();return true;
 }
 function upgradeStructure(b){if(!b||b.starter)return false;if(!['wall','door','window'].includes(b.kind)){showToast('Only barriers can be reinforced');return false}if(b.level>=3){showToast('Already fully reinforced');return false}const price=b.level===1?{wood:3,stone:2}:{stone:5,scrap:2};if(!consumeCost(price)){showToast('Need '+resourceText(price));return false}b.level++;b.maxhp+=b.level===2?120:180;b.hp=b.maxhp;showToast('Barrier reinforced to tier '+b.level);saveGame();return true}
 function enterEditMode(){if(!buildMode){const c=defaultBuildCell();buildMode={mode:'edit',id:lastBuildId,x:c.x,y:c.y,rotation:0,target:null}}else{buildMode.mode='edit';buildMode.target=null}updateBuildHUD();showToast('Tap a built piece to edit or dismantle');}
@@ -434,7 +526,7 @@ function listResources(){return ['wood','stone','fiber','cloth','scrap','leather
 function renderModal(){if(!modal)return;$('modal-title').textContent={inventory:'Backpack',craft:'Crafting bench',build:'Build your base',gear:'Survivor equipment',settings:'Game & saves'}[modal]||'Survival';document.querySelectorAll('.modal-tab').forEach(t=>t.classList.toggle('current',t.dataset.tab===modal));const body=$('modal-content');
  if(modal==='inventory')body.innerHTML=`<p class="panel-note">Everything you collect stays here. Equip clothing and tools to change how your survivor looks and fights.</p><div class="section-title">SUPPLIES & EQUIPMENT</div><div class="items-grid">${itemCards(true)}</div><p class="field-help">Quick-use food, water, bandages, axe and spear from the bottom hotbar.</p>`;
  if(modal==='craft')body.innerHTML=`<p class="panel-note">Collect resources, craft survival tools, and wear the gear you make. An equipped axe chops trees faster.</p><div class="resources">${listResources()}</div><div class="items-grid">${RECIPES.map(r=>`<div class="item-card"><div class="item-top"><div class="item-emoji">${TYPES[r.id].emoji}</div><div class="item-title">${TYPES[r.id].name}</div></div><div class="item-desc">${r.desc}</div><div class="item-cost">${resourceText(r.cost)}</div><button class="small-btn" data-craft="${r.id}" ${hasCost(r.cost)?'':'disabled'}>CRAFT ITEM</button></div>`).join('')}</div>`;
- if(modal==='build')body.innerHTML=`<p class="panel-note">REAL BUILDING · Select a piece, tap its grid square in the world, rotate, then confirm. Every structural piece requires a timber foundation. Open doors, repair barriers, or dismantle mistakes in EDIT mode.</p><div class="resources">${listResources()}</div><button class="small-btn secondary" data-edit="1">🔧 EDIT / REPAIR / DEMOLISH EXISTING STRUCTURES</button><div class="items-grid">${BUILD_RECIPES.map(r=>`<div class="item-card"><div class="item-top"><div class="item-emoji">${r.emoji}</div><div class="item-title">${r.name}</div></div><div class="item-desc">${r.desc}</div><div class="item-cost">${resourceText(r.cost)}</div><button class="small-btn" data-build="${r.id}">${hasCost(r.cost)?'SELECT BLUEPRINT':'PREVIEW · NEED MATERIALS'}</button></div>`).join('')}</div><p class="field-help">TIP: Start with FOUNDATIONS, then WALLS and a DOOR. Zombies attack closed barriers. Repaired walls protect your camp; upgrades cost extra resources.</p>`;
+ if(modal==='build')body.innerHTML=`<p class="panel-note">REAL BUILDING · Place floor tiles first. Walls, doors and windows snap to the OUTER EDGES of those tiles, not their centers. Tap near a foundation border to select an edge, then PLACE. Roofs go in the center once two walls support them. EDIT repairs or removes existing pieces.</p><div class="resources">${listResources()}</div><button class="small-btn secondary" data-edit="1">🔧 EDIT / REPAIR / DEMOLISH EXISTING STRUCTURES</button><div class="items-grid">${BUILD_RECIPES.map(r=>`<div class="item-card"><div class="item-top"><div class="item-emoji">${r.emoji}</div><div class="item-title">${r.name}</div></div><div class="item-desc">${r.desc}</div><div class="item-cost">${resourceText(r.cost)}</div><button class="small-btn" data-build="${r.id}">${hasCost(r.cost)?'SELECT BLUEPRINT':'PREVIEW · NEED MATERIALS'}</button></div>`).join('')}</div><p class="field-help">TIP: Start with FOUNDATIONS, then WALLS and a DOOR. Zombies attack closed barriers. Repaired walls protect your camp; upgrades cost extra resources.</p>`;
  if(modal==='storage')body.innerHTML=`<p class="panel-note">Storage chest — each chest keeps its own inventory, saved with your base.</p><div class="items-grid">${['wood','stone','fiber','cloth','scrap','leather','food','water','bandage'].map(id=>`<div class="item-card"><div class="item-top"><div class="item-emoji">${TYPES[id].emoji}</div><div class="item-title">${TYPES[id].name}</div></div><div class="item-desc">Bag: ${state.inventory[id]} · Stored: ${activeChest?.contents?.[id]||0}</div><button class="small-btn" data-store="${id}" ${state.inventory[id]<1?'disabled':''}>STORE 1</button><button class="small-btn secondary" data-take="${id}" ${(activeChest?.contents?.[id]||0)<1?'disabled':''}>TAKE 1</button></div>`).join('')}</div>`;
  if(modal==='gear'){
  const display={hand:state.equipment.hand?TYPES[state.equipment.hand].name:'Bare hands',chest:state.equipment.chest?TYPES[state.equipment.chest].name:'Bare chest',legs:state.equipment.legs==='shorts'?'Ragged shorts':'Cargo trousers',feet:state.equipment.feet==='sandals'?'Worn sandals':'Worn boots',back:state.equipment.back?'Small backpack':'None'};
@@ -535,12 +627,30 @@ function drawConstructionGrid(){if(!buildMode)return;const s=viewport.scale;cons
  ctx.save();ctx.lineWidth=.75;const x0=Math.floor(screenLeft/GRID)*GRID,y0=Math.floor(screenTop/GRID)*GRID;
  for(let x=x0;x<screenLeft+viewport.w/s+GRID;x+=GRID){const xx=px(x-GRID/2);ctx.strokeStyle='#f4e7bd2b';ctx.beginPath();ctx.moveTo(xx,0);ctx.lineTo(xx,viewport.h);ctx.stroke()}
  for(let y=y0;y<screenTop+viewport.h/s+GRID;y+=GRID){const yy=py(y-GRID/2);ctx.strokeStyle='#f4e7bd2b';ctx.beginPath();ctx.moveTo(0,yy);ctx.lineTo(viewport.w,yy);ctx.stroke()}
+ // Every timber foundation exposes four snap sockets for walls/doors.
+ if(isBarrier(buildMode.id)&&buildMode.mode==='place'){
+   ctx.save();ctx.lineWidth=2*s;ctx.strokeStyle='#d7edb36b';
+   for(const edge of foundationEdges()){
+     if(!visible(edge.x,edge.y,55)||edgeOccupied(edge.x,edge.y))continue;
+     const ex=px(edge.x),ey=py(edge.y),len=GRID*.43*s;
+     ctx.beginPath();
+     if(edge.rotation%2){ctx.moveTo(ex,ey-len);ctx.lineTo(ex,ey+len)}
+     else{ctx.moveTo(ex-len,ey);ctx.lineTo(ex+len,ey)}
+     ctx.stroke();
+   }
+   ctx.restore();
+ }
  ctx.restore()}
 function drawConstructionGhost(){if(!buildMode)return;
  const candidate=buildMode.mode==='edit'?buildMode.target:buildMode; if(!candidate)return;
  const x=candidate.x,y=candidate.y,s=viewport.scale,valid=buildMode.mode==='place'?checkBuildingSpot(buildMode.id,x,y,buildMode.rotation).ok:true;
  ctx.save();ctx.setLineDash([7*s,4*s]);ctx.strokeStyle=valid?'#baff96':'#ff847e';ctx.lineWidth=3*s;ctx.fillStyle=valid?'#8ad99a40':'#ed6f6a46';
- const xx=px(x)-27*s,yy=py(y)-27*s;ctx.fillRect(xx,yy,54*s,54*s);ctx.strokeRect(xx,yy,54*s,54*s);ctx.setLineDash([]);
+ // Frame walls narrowly around an edge, not around the whole floor tile.
+ const isEdge=buildMode.mode==='place'?isBarrier(buildMode.id):isBarrier(candidate.kind);
+ const rot=buildMode.mode==='place'?buildMode.rotation:(candidate.rotation||0);
+ const bw=(isEdge&&rot%2?16:54)*s,bh=(isEdge&&rot%2?54:isEdge?16:54)*s;
+ const xx=px(x)-bw/2,yy=py(y)-bh/2;
+ ctx.fillRect(xx,yy,bw,bh);ctx.strokeRect(xx,yy,bw,bh);ctx.setLineDash([]);
  ctx.globalAlpha=.75;drawBuilding({kind:buildMode.mode==='place'?buildMode.id:candidate.kind,x,y,hp:100,maxhp:100,level:1,rotation:buildMode.rotation,open:false});ctx.globalAlpha=1;
  ctx.font=`800 ${12*s}px system-ui`;ctx.textAlign='center';ctx.lineWidth=3*s;ctx.strokeStyle='#12231c';ctx.strokeText(valid?'✓':'×',px(x),py(y)-33*s);ctx.fillStyle=valid?'#dcffbd':'#ffc3bd';ctx.fillText(valid?'✓':'×',px(x),py(y)-33*s);ctx.restore();}
 // Layered procedural character sprites with independent step cycles, arm swing,
@@ -722,12 +832,28 @@ canvas.addEventListener('pointerdown',e=>{
  if(buildMode.mode==='edit'){
   buildMode.target=selectBuildingAt(x,y);
   if(buildMode.target){buildMode.x=buildMode.target.x;buildMode.y=buildMode.target.y;showToast('Selected '+buildMode.target.kind+' · '+Math.round(100*buildMode.target.hp/buildMode.target.maxhp)+'% integrity',1000)}
+ }else if(isBarrier(buildMode.id)){
+   // A tap inside a foundation tile finds its closest edge. No need to
+   // perfectly touch the 1-pixel grid line on a small phone screen.
+   const edge=nearestFoundationEdge(x,y,null,false,110);
+   if(edge){buildMode.x=edge.x;buildMode.y=edge.y;buildMode.rotation=edge.rotation;}
+   else{buildMode.x=snap(x);buildMode.y=snap(y)-GRID/2;buildMode.rotation=0;}
  }else{buildMode.x=snap(x);buildMode.y=snap(y)}
  updateBuildHUD();
 });
 for(const [id,cb] of Object.entries({
  'build-action':()=>confirmBuild(),
- 'build-rotate':()=>{if(buildMode){buildMode.rotation=(buildMode.rotation+1)%2;updateBuildHUD()}},
+ 'build-rotate':()=>{
+   if(!buildMode||buildMode.mode!=='place')return;
+   const nextRotation=(buildMode.rotation+1)%2;
+   if(isBarrier(buildMode.id)){
+     const edge=nearestFoundationEdge(buildMode.x,buildMode.y,nextRotation,true,GRID*2.5);
+     if(edge){buildMode.x=edge.x;buildMode.y=edge.y;}
+     else{showToast('No open foundation edge in that direction');return;}
+   }
+   buildMode.rotation=nextRotation;
+   updateBuildHUD();
+ },
  'build-stop':()=>stopBuilding(),
  'build-remove':()=>buildMode?.target&&demolishStructure(buildMode.target),
  'build-upgrade':()=>{if(buildMode?.target){upgradeStructure(buildMode.target);updateBuildHUD()}},
